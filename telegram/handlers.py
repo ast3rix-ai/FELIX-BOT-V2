@@ -8,7 +8,7 @@ from telethon.client.telegramclient import TelegramClient
 
 from core.delays import typing_delay
 from core.folder_manager import add_peer_to, get_filters
-from core.router import decide_action
+from core.router import route
 from core.logging import logger
 
 
@@ -59,15 +59,23 @@ def register_handlers(client: TelegramClient, templates: Dict[str, str]) -> None
     asyncio.create_task(init_cache())
 
     @client.on(events.NewMessage(incoming=True))
+    # Per-peer locks and a simple global RPS limiter
+    peer_locks: Dict[str, asyncio.Lock] = {}
+    rps_lock = asyncio.Semaphore(5)
+
     async def on_new_message(event: events.NewMessage.Event) -> None:  # type: ignore[override]
         if event.is_private is False:
             return
 
         sender = await event.get_input_sender()
+        peer_key = FolderCache._peer_key(sender)
+
+        lock = peer_locks.setdefault(peer_key, asyncio.Lock())
+        async with rps_lock, lock:
         # Obtain latest folder state if cache is empty
-        if not folder_cache.map:
-            fc = await build_folder_cache(client)
-            folder_cache.map = fc.map
+            if not folder_cache.map:
+                fc = await build_folder_cache(client)
+                folder_cache.map = fc.map
 
         # Ignore if already in Manual(1) / Timewaster(3) / Confirmation(4)
         for fid in (1, 3, 4):
@@ -76,19 +84,24 @@ def register_handlers(client: TelegramClient, templates: Dict[str, str]) -> None
 
         # Otherwise treat as Bot folder (2) by default
         text = event.raw_text or ""
-        decision = decide_action(text, rules={})
+        action, payload = route(text, rules={})
 
-        if decision.action == "manual":
+        if action == "manual":
             # do nothing; leave for human, but not moving to Manual automatically per spec
             return
 
-        if decision.action == "move":
-            await add_peer_to(client, decision.move_to_folder_id or 3, sender)
-            folder_cache.add(decision.move_to_folder_id or 3, sender)
+        if action == "move_timewaster":
+            await add_peer_to(client, 3, sender)
+            folder_cache.add(3, sender)
             return
 
-        if decision.action == "template":
-            template_key = decision.template_key or "welcome"
+        if action == "move_confirmation":
+            await add_peer_to(client, 4, sender)
+            folder_cache.add(4, sender)
+            return
+
+        if action == "send_template":
+            template_key = payload.get("template_key", "welcome")
             reply_text = templates.get(template_key) or templates.get("welcome") or "Thanks for your message."
 
             from telegram.actions import mark_read, type_then_send  # local import to avoid cyc.

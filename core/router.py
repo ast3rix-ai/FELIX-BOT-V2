@@ -1,44 +1,37 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, Optional
-
-
-@dataclass
-class RouteDecision:
-    action: str  # "template" or "manual" or "move"
-    template_key: Optional[str] = None
-    move_to_folder_id: Optional[int] = None
-    intent: Optional[str] = None
+from typing import Dict, Optional, Tuple
 
 
 def _normalize(text: str) -> str:
     return " ".join(text.lower().strip().split())
 
 
-def decide_action(message_text: str, rules: Dict) -> RouteDecision:
+def route(message_text: str, rules: Dict) -> Tuple[str, Dict]:
+    """Return (action, payload) for a given message text.
+
+    Actions: send_template, move_timewaster, move_confirmation, manual
+    """
     text = _normalize(message_text)
 
-    # Simple keyword intents; can be extended with YAML rules later
     if any(k in text for k in ["hi", "hey", "hello"]):
-        return RouteDecision(action="template", template_key="welcome", intent="greeting")
+        return ("send_template", {"template_key": "welcome"})
 
     if any(k in text for k in ["price", "pricelist"]):
-        return RouteDecision(action="template", template_key="pricelist", intent="price")
+        return ("send_template", {"template_key": "pricelist"})
 
     if any(k in text for k in ["how pay", "how to pay", "payment"]):
-        return RouteDecision(action="template", template_key="how_to_pay", intent="payment_info")
+        return ("send_template", {"template_key": "how_to_pay"})
 
     if any(k in text for k in ["not interested", "stop", "no thanks"]):
-        return RouteDecision(action="move", move_to_folder_id=3, intent="not_interested")
+        return ("move_timewaster", {})
 
     if any(k in text for k in ["paid", "sending"]):
-        return RouteDecision(action="move", move_to_folder_id=4, intent="confirmation")
+        return ("move_confirmation", {})
 
-    # Default: manual
-    return RouteDecision(action="manual")
+    return ("manual", {})
 
 
-__all__ = ["RouteDecision", "decide_action"]
+__all__ = ["route"]
 
 

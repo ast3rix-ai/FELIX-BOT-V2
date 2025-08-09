@@ -7,7 +7,8 @@ from telethon.client.telegramclient import TelegramClient
 
 
 async def mark_read(client: TelegramClient, chat: Any, msg: Any | None = None) -> None:
-    await client.send_read_acknowledge(chat, message=msg)
+    max_id = getattr(msg, "id", None)
+    await client.send_read_acknowledge(chat, max_id=max_id)
 
 
 async def type_then_send(client: TelegramClient, chat: Any, text: str, delay: float) -> None:

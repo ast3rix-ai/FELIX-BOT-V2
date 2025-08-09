@@ -1,34 +1,34 @@
-from core.router import decide_action
+from core.router import route
 
 
 def test_greeting_template():
-    d = decide_action("Hi there", {})
-    assert d.action == "template"
-    assert d.template_key == "welcome"
+    action, payload = route("Hi there", {})
+    assert action == "send_template"
+    assert payload.get("template_key") == "welcome"
 
 
 def test_price_template():
-    d = decide_action("Do you have a pricelist?", {})
-    assert d.action == "template"
+    action, payload = route("Do you have a pricelist?", {})
+    assert action == "send_template"
 
 
 def test_payment_template():
-    d = decide_action("how to pay?", {})
-    assert d.action == "template"
+    action, payload = route("how to pay?", {})
+    assert action == "send_template"
 
 
 def test_move_timewaster():
-    d = decide_action("I'm not interested", {})
-    assert d.action == "move" and d.move_to_folder_id == 3
+    action, payload = route("I'm not interested", {})
+    assert action == "move_timewaster"
 
 
 def test_move_confirmation():
-    d = decide_action("paid, sending", {})
-    assert d.action == "move" and d.move_to_folder_id == 4
+    action, payload = route("paid, sending", {})
+    assert action == "move_confirmation"
 
 
 def test_fallback_manual():
-    d = decide_action("random text with no keywords", {})
-    assert d.action == "manual"
+    action, payload = route("random text with no keywords", {})
+    assert action == "manual"
 
 
