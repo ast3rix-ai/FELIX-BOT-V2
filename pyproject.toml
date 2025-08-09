@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling>=1.18.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "telegram-broker"
+version = "0.1.0"
+description = "Minimal Telegram folder manager scaffolding"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+  { name = "Your Name" }
+]
+dependencies = [
+  "telethon",
+  "pydantic>=2",
+  "python-dotenv",
+  "pyyaml",
+  "loguru",
+  "qasync",
+  "PySide6",
+  "pytest"
+]
+
+[project.scripts]
+telegram-broker = "app.main:main"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-q"
+testpaths = [
+  "tests"
+]
+
+

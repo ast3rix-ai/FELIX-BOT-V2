@@ -1,0 +1,15 @@
+# Sample templates for messages or automations
+welcome: |
+  Hello {{ name }}, thanks for reaching out!
+  This is an automated reply.
+
+reminder: |
+  Just checking in. Let me know if you still need help.
+
+pricelist: |
+  Here is our current pricelist: ...
+
+how_to_pay: |
+  You can pay via credit card or PayPal. Let me know which you prefer.
+
+

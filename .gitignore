@@ -1,0 +1,32 @@
+# Environments
+.env
+.env.*
+.venv/
+venv/
+
+# OS/IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.coverage
+coverage.xml
+
+# Build
+build/
+dist/
+*.egg-info/
+
+# Telethon sessions
+data/**/session.session
+data/**/session.session-journal
+
+

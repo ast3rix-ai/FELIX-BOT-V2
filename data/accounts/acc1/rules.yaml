@@ -1,0 +1,12 @@
+# Sample rules configuration
+thresholds:
+  timewaster: 0.2
+  confirmation: 0.8
+
+folders:
+  1: Manual
+  2: Bot
+  3: Timewaster
+  4: Confirmation
+
+
