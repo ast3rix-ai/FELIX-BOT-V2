@@ -7,9 +7,11 @@ from telethon import events, functions, types
 from telethon.client.telegramclient import TelegramClient
 
 from core.delays import typing_delay
-from core.folder_manager import add_peer_to, get_filters
+from core.folder_manager import FOLDERS, add_peer_to, get_filters
 from core.router import route
 from core.logging import logger
+from core.classifier import classify_and_maybe_reply
+from core.llm import LLM, LLMReject
 
 
 class FolderCache:
@@ -48,7 +50,7 @@ async def build_folder_cache(client: TelegramClient) -> FolderCache:
     return FolderCache.from_filters(filters)
 
 
-def register_handlers(client: TelegramClient, templates: Dict[str, str]) -> None:
+def register_handlers(client: TelegramClient, templates: Dict[str, str], llm: Optional[LLM] = None, threshold: float = 0.75) -> None:
     folder_cache: FolderCache = FolderCache()
 
     async def init_cache() -> None:
@@ -87,7 +89,24 @@ def register_handlers(client: TelegramClient, templates: Dict[str, str]) -> None
         action, payload = route(text, rules={})
 
         if action == "manual":
-            # do nothing; leave for human, but not moving to Manual automatically per spec
+            # Try LLM fallback if available
+            if llm is not None:
+                history: list[str] = []
+                try:
+                    intent, confidence, reply = await classify_and_maybe_reply(llm, text, history, threshold)
+                except LLMReject:
+                    reply = None
+                    confidence = 0.0
+                if reply and confidence >= threshold and len(reply.split()) <= 120:
+                    from telegram.actions import mark_read, type_then_send
+
+                    await mark_read(client, event.chat_id, event.message)
+                    delay = typing_delay(len(reply))
+                    await type_then_send(client, event.chat_id, reply, delay)
+                    return
+            # Fallback: route to Manual without read/typing
+            await add_peer_to(client, 1, sender)
+            folder_cache.add(1, sender)
             return
 
         if action == "move_timewaster":

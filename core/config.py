@@ -40,6 +40,11 @@ class BrokerSettings(BaseModel):
     # Paths
     paths: Paths = Field(default_factory=Paths)
 
+    # LLM fallback
+    ollama_url: str = Field(default="http://localhost:11434")
+    llm_model: str = Field(default="deepseek-r1:7b")
+    llm_threshold: float = Field(default=0.75)
+
     def get_session_path(self, account: Optional[str] = None) -> Path:
         acc = account or self.account
         return self.paths.session_path(acc)
@@ -58,6 +63,9 @@ class BrokerSettings(BaseModel):
             "telegram_api_id": int(getenv("TELEGRAM_API_ID", "0")),
             "telegram_api_hash": getenv("TELEGRAM_API_HASH", "") or "",
             "openai_api_key": getenv("OPENAI_API_KEY"),
+            "ollama_url": getenv("OLLAMA_URL", "http://localhost:11434"),
+            "llm_model": getenv("MODEL", "deepseek-r1:7b"),
+            "llm_threshold": float(getenv("LLM_THRESHOLD", "0.75")),
         }
         return cls(**data)
 

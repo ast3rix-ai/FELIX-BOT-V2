@@ -12,6 +12,7 @@ from core.folder_manager import ensure_filters
 from core.logging import configure_logging, logger
 from telegram.client_manager import create_client
 from telegram.handlers import register_handlers
+from core.llm import LLM
 
 
 async def _async_main() -> None:
@@ -41,7 +42,10 @@ async def _async_main() -> None:
             except Exception as e:
                 logger.warning({"event": "templates_load_failed", "error": str(e)})
 
-        register_handlers(client, templates)
+        # LLM fallback instance
+        llm = LLM(url=settings.ollama_url, model=settings.llm_model)
+
+        register_handlers(client, templates, llm=llm, threshold=settings.llm_threshold)
 
         logger.info({"event": "listening"})
         await client.run_until_disconnected()
