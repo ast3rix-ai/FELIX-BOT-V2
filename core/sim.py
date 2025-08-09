@@ -106,6 +106,9 @@ class SimEngine:
 
     async def incoming(self, peer_id: str | int, text: str) -> None:
         peer = self.peers.setdefault(peer_id, SimPeer(peer_id=peer_id, display_name=str(peer_id)))
+        if peer.folder is not SimFolder.BOT:
+            peer.folder = SimFolder.BOT
+            self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
         peer.history.append({"role": "user", "text": text, "ts": self._now()})
         self._event("incoming", peer_id=str(peer_id), text=text)
         await self.process(peer_id, text)

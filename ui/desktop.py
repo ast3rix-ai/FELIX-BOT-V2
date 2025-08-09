@@ -115,8 +115,14 @@ class DesktopWindow(QtWidgets.QMainWindow):
 
     def _build_sim_engine(self):
         from core.sim import SimEngine
-        # Start with empty templates; will refresh on start
-        return SimEngine(templates={}, threshold=self.settings.llm_threshold)
+        from core.templates import load_templates
+        # Preload templates for Test Lab
+        templates = {}
+        try:
+            templates = load_templates()
+        except Exception:
+            templates = {}
+        return SimEngine(templates=templates, threshold=self.settings.llm_threshold)
 
     @QtCore.Slot()
     def on_start_stop(self) -> None:

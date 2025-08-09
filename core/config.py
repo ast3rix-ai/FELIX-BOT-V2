@@ -49,6 +49,17 @@ class BrokerSettings(BaseModel):
         acc = account or self.account
         return self.paths.session_path(acc)
 
+    # Convenience helpers for account-scoped files
+    @property
+    def account_dir(self) -> Path:
+        return self.paths.accounts_dir / self.account
+
+    def templates_path(self) -> Path:
+        return self.account_dir / "templates.yaml"
+
+    def rules_path(self) -> Path:
+        return self.account_dir / "rules.yaml"
+
     @classmethod
     def from_env(cls) -> "BrokerSettings":
         def getenv(name: str, default: Optional[str] = None) -> Optional[str]:

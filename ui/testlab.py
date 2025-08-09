@@ -91,6 +91,10 @@ class TestLab(QtWidgets.QWidget):
         # Center chat
         center = QtWidgets.QVBoxLayout()
         content.addLayout(center, 3)
+        # Diagnostics bar
+        self.diag_label = QtWidgets.QLabel("")
+        self.diag_label.setWordWrap(True)
+        center.addWidget(self.diag_label)
         self.chat_list = QtWidgets.QListWidget()
         center.addWidget(self.chat_list)
 
@@ -142,12 +146,14 @@ class TestLab(QtWidgets.QWidget):
             self.engine.add_peer("user1", "Alice")
         self._refresh_peers()
         self._refresh_logs()
+        self._refresh_diag()
 
     def _on_reload_templates(self) -> None:
         try:
             self.engine.templates = load_templates()
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", str(e))
+        self._refresh_diag()
 
     def _refresh_peers(self) -> None:
         self.peer_combo.clear()
@@ -167,6 +173,14 @@ class TestLab(QtWidgets.QWidget):
             text = m.get("text")
             self.chat_list.addItem(f"[{ts:.0f}] {role}: {text}")
         self._refresh_inspector()
+        self._refresh_diag()
+
+    def _refresh_diag(self) -> None:
+        from core.config import load_settings
+        s = load_settings()
+        path = (s.paths.accounts_dir / s.account / "templates.yaml").resolve()
+        keys = ", ".join(sorted(self.engine.templates.keys()))
+        self.diag_label.setText(f"Templates: {path} | keys: {keys} | account={s.account}")
 
     def _refresh_inspector(self) -> None:
         pid = self.peer_combo.currentData()
