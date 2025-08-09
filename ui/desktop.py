@@ -91,7 +91,7 @@ class DesktopWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(main_tab, "Main")
 
         # Test Lab tab
-        self.testlab = TestLab(self._build_sim_engine())
+        self.testlab = TestLab(self._build_sim_engine(), live_classifier=None)
         lab_container = QtWidgets.QWidget()
         lab_layout = QtWidgets.QVBoxLayout(lab_container)
         lab_layout.addWidget(self.testlab)

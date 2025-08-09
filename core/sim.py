@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple, Callable, Awaitable
 
 from .delays import typing_delay
 from .router import route
+from .templates import render_template
 
 
 class SimFolder(Enum):
@@ -50,6 +51,8 @@ class SimEngine:
         self.threshold = threshold
         self.simulate_typing = simulate_typing
         self.simulate_read = simulate_read
+        self.respect_peer_cooldown: bool = False
+        self.respect_global_rps: bool = False
 
         self.peers: Dict[str | int, SimPeer] = {}
         self.events: List[SimEvent] = []
@@ -68,6 +71,8 @@ class SimEngine:
                 "TIMEWASTER": sum(1 for p in self.peers.values() if p.folder is SimFolder.TIMEWASTER),
                 "CONFIRMATION": sum(1 for p in self.peers.values() if p.folder is SimFolder.CONFIRMATION),
             },
+            "assert_pass": sum(1 for e in self.events if e.kind == "assert" and e.payload.get("pass") is True),
+            "assert_fail": sum(1 for e in self.events if e.kind == "assert" and e.payload.get("pass") is False),
         }
         return {
             "peers": {str(k): {"peer_id": str(v.peer_id), "display_name": v.display_name, "folder": v.folder.name, "history": v.history} for k, v in self.peers.items()},
@@ -102,11 +107,22 @@ class SimEngine:
             self._event("read", peer_id=str(peer_id))
 
         action, payload = route(text, self.rules)
-        self._event("route", peer_id=str(peer_id), action=action, payload=payload)
+        self._event(
+            "route",
+            peer_id=str(peer_id),
+            action=action,
+            payload=payload,
+            flags={
+                "respect_peer_cooldown": self.respect_peer_cooldown,
+                "respect_global_rps": self.respect_global_rps,
+            },
+        )
 
         if action == "send_template":
             template_key = payload.get("template_key", "welcome")
-            reply = self.templates.get(template_key) or self.templates.get("welcome") or "Thanks for your message."
+            reply = render_template(self.templates, template_key)
+            if not reply:
+                reply = self.templates.get("welcome", "Thanks for your message.")
             delay = typing_delay(len(reply))
             if self.simulate_typing:
                 self._event("typing", peer_id=str(peer_id), delay=delay)

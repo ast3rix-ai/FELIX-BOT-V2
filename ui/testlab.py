@@ -9,6 +9,8 @@ import yaml
 from PySide6 import QtCore, QtWidgets
 
 from core.sim import SimEngine, SimFolder
+from core.templates import render_template
+from core.classifier import classify_and_maybe_reply
 
 
 class TestLab(QtWidgets.QWidget):
@@ -41,17 +43,36 @@ class TestLab(QtWidgets.QWidget):
 
         self.chk_read = QtWidgets.QCheckBox("Simulate Read")
         self.chk_typing = QtWidgets.QCheckBox("Simulate Typing")
+        # LLM mode and controls
         self.chk_llm = QtWidgets.QCheckBox("Use LLM Fallback")
+        mode_row = QtWidgets.QHBoxLayout()
+        self.llm_mode = QtWidgets.QComboBox()
+        self.llm_mode.addItems(["Disabled", "Live", "Mock"])
+        self.spin_conf = QtWidgets.QDoubleSpinBox()
+        self.spin_conf.setRange(0.0, 1.0)
+        self.spin_conf.setSingleStep(0.05)
+        self.spin_conf.setValue(0.9)
+        mode_row.addWidget(QtWidgets.QLabel("LLM Mode:"))
+        mode_row.addWidget(self.llm_mode)
+        mode_row.addWidget(QtWidgets.QLabel("Mock confidence:"))
+        mode_row.addWidget(self.spin_conf)
         self.chk_read.setChecked(self.engine.simulate_read)
         self.chk_typing.setChecked(self.engine.simulate_typing)
         left.addWidget(self.chk_read)
         left.addWidget(self.chk_typing)
         left.addWidget(self.chk_llm)
+        left.addLayout(mode_row)
 
         self.slider_thresh = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider_thresh.setRange(50, 95)
+        self.slider_thresh.setSingleStep(1)
         self.slider_thresh.setValue(int(self.engine.threshold * 100))
         self.lbl_thresh = QtWidgets.QLabel(f"Threshold: {self.engine.threshold:.2f}")
+        # Cooldown/RPS checkboxes (annotate events only)
+        self.chk_peer_cd = QtWidgets.QCheckBox("Respect per-peer cooldown")
+        self.chk_global_rps = QtWidgets.QCheckBox("Respect global RPS")
+        left.addWidget(self.chk_peer_cd)
+        left.addWidget(self.chk_global_rps)
         left.addWidget(self.slider_thresh)
         left.addWidget(self.lbl_thresh)
 
@@ -93,6 +114,10 @@ class TestLab(QtWidgets.QWidget):
         self.chk_typing.toggled.connect(self._on_flags)
         self.chk_llm.toggled.connect(self._on_flags)
         self.slider_thresh.valueChanged.connect(self._on_thresh)
+        self.llm_mode.currentIndexChanged.connect(self._on_llm_mode)
+        self.spin_conf.valueChanged.connect(lambda _: None)
+        self.chk_peer_cd.toggled.connect(self._on_flags)
+        self.chk_global_rps.toggled.connect(self._on_flags)
 
     def mount(self) -> None:
         if not self.engine.peers:
@@ -157,9 +182,45 @@ class TestLab(QtWidgets.QWidget):
         text = self.input_text.text().strip()
         if not pid or not text:
             return
-        asyncio.create_task(self.engine.incoming(pid, text))
+        asyncio.create_task(self._incoming_with_mode(pid, text))
         # Render after a small delay to allow events to accumulate
         asyncio.create_task(self._render_soon())
+
+    async def _incoming_with_mode(self, pid, text: str) -> None:
+        # Wrap engine.classifier depending on UI mode
+        original = self.engine.classifier
+        mode = self.llm_mode.currentText()
+        use_llm = self.chk_llm.isChecked()
+        if use_llm and mode == "Mock":
+            conf = float(self.spin_conf.value())
+
+            async def mock_classifier(t: str, history: list[str]):
+                low = t.lower()
+                if any(k in low for k in ["hi", "hey", "hello"]):
+                    return {"intent": "greeting", "confidence": conf, "reply": "Hello!"}
+                if any(k in low for k in ["price", "pricelist"]):
+                    return {"intent": "price", "confidence": conf, "reply": None}
+                if any(k in low for k in ["how pay", "how to pay", "payment"]):
+                    return {"intent": "payment_info", "confidence": conf, "reply": None}
+                if any(k in low for k in ["paid", "sending"]):
+                    return {"intent": "confirmation", "confidence": conf, "reply": None}
+                if any(k in low for k in ["not interested", "stop", "no thanks"]):
+                    return {"intent": "not_interested", "confidence": conf, "reply": None}
+                return {"intent": "other", "confidence": conf, "reply": None}
+
+            self.engine.classifier = mock_classifier  # type: ignore[assignment]
+        elif use_llm and mode == "Live" and original is None:
+            # Leave as-is; engine.classifier may be None in Test Lab, UI layer could inject a live adapter
+            pass
+        else:
+            self.engine.classifier = None  # disabled
+
+        # Set flags
+        self.engine.respect_peer_cooldown = self.chk_peer_cd.isChecked()
+        self.engine.respect_global_rps = self.chk_global_rps.isChecked()
+
+        await self.engine.incoming(pid, text)
+        self.engine.classifier = original
 
     async def _render_soon(self) -> None:
         await asyncio.sleep(0.05)
@@ -183,9 +244,51 @@ class TestLab(QtWidgets.QWidget):
         steps = scenario.get("steps", [])
         pid = self.peer_combo.currentData()
         for step in steps:
+            before = len(self.engine.events)
             text = step.get("text", "")
-            await self.engine.incoming(pid, text)
+            await self._incoming_with_mode(pid, text)
             await asyncio.sleep(0.05)
+            new_events = [e for e in self.engine.events[before:] if e.payload.get("peer_id") == str(pid)]
+            actual_action = None
+            actual_template = None
+            final_folder = self.engine.peers[pid].folder.name
+            for e in new_events:
+                if e.kind == "send":
+                    actual_action = actual_action or "send_template"
+                    actual_template = e.payload.get("template")
+                if e.kind == "move_folder":
+                    folder = e.payload.get("folder")
+                    if folder == "TIMEWASTER":
+                        actual_action = "move_timewaster"
+                    elif folder == "CONFIRMATION":
+                        actual_action = "move_confirmation"
+                    elif folder == "MANUAL":
+                        actual_action = "manual"
+            if actual_action is None and final_folder == "MANUAL":
+                actual_action = "manual"
+
+            exp = step.get("expect", {})
+            ok = True
+            reason = []
+            if "action" in exp and actual_action != exp.get("action"):
+                ok = False
+                reason.append(f"action {actual_action} != {exp.get('action')}")
+            if "template" in exp and (actual_template or None) != exp.get("template"):
+                ok = False
+                reason.append(f"template {actual_template} != {exp.get('template')}")
+            if "folder" in exp and final_folder != exp.get("folder"):
+                ok = False
+                reason.append(f"folder {final_folder} != {exp.get('folder')}")
+
+            self.engine._event(
+                "assert",
+                peer_id=str(pid),
+                step=text,
+                expect=exp,
+                actual={"action": actual_action, "template": actual_template, "folder": final_folder},
+                **{"pass": ok, "reason": "; ".join(reason)},
+            )
+
             self._refresh_chat()
             self._refresh_logs()
 
@@ -211,11 +314,17 @@ class TestLab(QtWidgets.QWidget):
         self.engine.simulate_read = self.chk_read.isChecked()
         self.engine.simulate_typing = self.chk_typing.isChecked()
         # LLM toggle is respected by creating/dropping adapter in desktop wiring
+        self.engine.respect_peer_cooldown = self.chk_peer_cd.isChecked()
+        self.engine.respect_global_rps = self.chk_global_rps.isChecked()
 
     @QtCore.Slot()
     def _on_thresh(self) -> None:
         self.engine.threshold = self.slider_thresh.value() / 100.0
         self.lbl_thresh.setText(f"Threshold: {self.engine.threshold:.2f}")
+
+    @QtCore.Slot()
+    def _on_llm_mode(self) -> None:
+        pass
 
 
 __all__ = ["TestLab"]
