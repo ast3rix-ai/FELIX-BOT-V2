@@ -16,6 +16,7 @@ from telegram.client_manager import create_client
 from telegram.handlers import register_handlers
 
 import yaml
+from .testlab import TestLab
 
 
 class UIQueueWriter:
@@ -74,11 +75,29 @@ class DesktopWindow(QtWidgets.QMainWindow):
             self.counter_labels[fid] = lab
             grid.addWidget(lab, idx, 1)
 
-        # Logs
-        layout.addWidget(QtWidgets.QLabel("Logs:"))
+        # Tabs: Main controls + Test Lab
+        self.tabs = QtWidgets.QTabWidget()
+        layout.addWidget(self.tabs)
+
+        main_tab = QtWidgets.QWidget()
+        main_layout = QtWidgets.QVBoxLayout(main_tab)
+
+        main_layout.addLayout(row_top)
+        main_layout.addLayout(grid)
+
+        main_layout.addWidget(QtWidgets.QLabel("Logs:"))
         self.log_view = QtWidgets.QTextEdit()
         self.log_view.setReadOnly(True)
-        layout.addWidget(self.log_view)
+        main_layout.addWidget(self.log_view)
+
+        self.tabs.addTab(main_tab, "Main")
+
+        # Test Lab tab
+        self.testlab = TestLab(self._build_sim_engine())
+        lab_container = QtWidgets.QWidget()
+        lab_layout = QtWidgets.QVBoxLayout(lab_container)
+        lab_layout.addWidget(self.testlab)
+        self.tabs.addTab(lab_container, "Test Lab")
 
         self.setCentralWidget(central)
 
@@ -117,6 +136,10 @@ class DesktopWindow(QtWidgets.QMainWindow):
         await self._client.start()
         await ensure_filters(self._client)
         register_handlers(self._client, templates, llm=llm, threshold=self.settings.llm_threshold)
+
+        # Refresh Test Lab engine with current templates
+        self.testlab.engine.templates = templates
+        self.testlab.mount()
 
         self._worker_task = asyncio.create_task(self._worker())
         self._counters_task = asyncio.create_task(self._update_counters_periodically())

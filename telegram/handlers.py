@@ -60,11 +60,11 @@ def register_handlers(client: TelegramClient, templates: Dict[str, str], llm: Op
     # initialize cache in background
     asyncio.create_task(init_cache())
 
-    @client.on(events.NewMessage(incoming=True))
     # Per-peer locks and a simple global RPS limiter
     peer_locks: Dict[str, asyncio.Lock] = {}
     rps_lock = asyncio.Semaphore(5)
 
+    @client.on(events.NewMessage(incoming=True))
     async def on_new_message(event: events.NewMessage.Event) -> None:  # type: ignore[override]
         if event.is_private is False:
             return
@@ -74,7 +74,7 @@ def register_handlers(client: TelegramClient, templates: Dict[str, str], llm: Op
 
         lock = peer_locks.setdefault(peer_key, asyncio.Lock())
         async with rps_lock, lock:
-        # Obtain latest folder state if cache is empty
+            # Obtain latest folder state if cache is empty
             if not folder_cache.map:
                 fc = await build_folder_cache(client)
                 folder_cache.map = fc.map
