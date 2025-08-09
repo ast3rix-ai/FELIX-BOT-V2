@@ -98,10 +98,21 @@ class TestLab(QtWidgets.QWidget):
         self.inspector.setReadOnly(True)
         right.addWidget(self.inspector)
 
-        # Bottom logs
+        # Bottom logs with filter/copy/save
+        logs_box = QtWidgets.QVBoxLayout()
+        filter_row = QtWidgets.QHBoxLayout()
+        filter_row.addWidget(QtWidgets.QLabel("Filter logs:"))
+        self.log_filter = QtWidgets.QLineEdit()
+        filter_row.addWidget(self.log_filter)
+        self.btn_copy = QtWidgets.QPushButton("Copy All")
+        self.btn_save = QtWidgets.QPushButton("Save...")
+        filter_row.addWidget(self.btn_copy)
+        filter_row.addWidget(self.btn_save)
+        logs_box.addLayout(filter_row)
         self.logs = QtWidgets.QPlainTextEdit()
         self.logs.setReadOnly(True)
-        root.addWidget(self.logs)
+        logs_box.addWidget(self.logs)
+        root.addLayout(logs_box)
 
         # Signals
         self.btn_add_peer.clicked.connect(self._on_add_peer)
@@ -118,6 +129,9 @@ class TestLab(QtWidgets.QWidget):
         self.spin_conf.valueChanged.connect(lambda _: None)
         self.chk_peer_cd.toggled.connect(self._on_flags)
         self.chk_global_rps.toggled.connect(self._on_flags)
+        self.log_filter.textChanged.connect(self._refresh_logs)
+        self.btn_copy.clicked.connect(self._copy_logs)
+        self.btn_save.clicked.connect(self._save_logs)
 
     def mount(self) -> None:
         if not self.engine.peers:
@@ -160,8 +174,11 @@ class TestLab(QtWidgets.QWidget):
 
     def _refresh_logs(self) -> None:
         self.logs.clear()
+        q = self.log_filter.text().strip().lower()
         for e in self.engine.events:
-            self.logs.appendPlainText(f"{e.ts:.0f} {e.kind} {e.payload}")
+            line = f"{e.ts:.0f} {e.kind} {e.payload}"
+            if not q or q in e.kind.lower() or q in str(e.payload).lower():
+                self.logs.appendPlainText(line)
 
     @QtCore.Slot()
     def _on_add_peer(self) -> None:
@@ -308,6 +325,20 @@ class TestLab(QtWidgets.QWidget):
         data = self.engine.export_report()
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+
+    @QtCore.Slot()
+    def _copy_logs(self) -> None:
+        self.logs.selectAll()
+        self.logs.copy()
+        self.logs.moveCursor(QtWidgets.QTextCursor.End)
+
+    @QtCore.Slot()
+    def _save_logs(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Logs", str(Path.cwd() / "sim-logs.txt"), "Text (*.txt)")
+        if not path:
+            return
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(self.logs.toPlainText())
 
     @QtCore.Slot()
     def _on_flags(self) -> None:

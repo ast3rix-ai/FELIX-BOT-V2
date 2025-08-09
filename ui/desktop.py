@@ -9,7 +9,7 @@ from PySide6 import QtCore, QtWidgets
 from qasync import QEventLoop
 
 from core.config import BrokerSettings
-from core.logging import logger, configure_logging
+from core.logging import logger, configure_logging, get_log_queue
 from core.folder_manager import FOLDERS, ensure_filters, current_filters
 from core.llm import LLM
 from telegram.client_manager import create_client
@@ -86,6 +86,13 @@ class DesktopWindow(QtWidgets.QMainWindow):
         main_layout.addWidget(QtWidgets.QLabel("Logs:"))
         self.log_view = QtWidgets.QTextEdit()
         self.log_view.setReadOnly(True)
+        # Log controls
+        log_controls = QtWidgets.QHBoxLayout()
+        self.btn_copy_logs = QtWidgets.QPushButton("Copy All")
+        self.btn_save_logs = QtWidgets.QPushButton("Save...")
+        log_controls.addWidget(self.btn_copy_logs)
+        log_controls.addWidget(self.btn_save_logs)
+        main_layout.addLayout(log_controls)
         main_layout.addWidget(self.log_view)
 
         self.tabs.addTab(main_tab, "Main")
@@ -101,6 +108,10 @@ class DesktopWindow(QtWidgets.QMainWindow):
 
         # Install an additional non-JSON sink for UI
         logger.add(UIQueueWriter(self._log_queue), level="INFO", format="{time:HH:mm:ss} | {level} | {message}", enqueue=True)
+
+        # Wire copy/save actions
+        self.btn_copy_logs.clicked.connect(self._copy_logs)
+        self.btn_save_logs.clicked.connect(self._save_logs)
 
     def _build_sim_engine(self):
         from core.sim import SimEngine
@@ -185,12 +196,30 @@ class DesktopWindow(QtWidgets.QMainWindow):
             await asyncio.sleep(5.0)
 
     async def _consume_logs(self) -> None:
+        q = get_log_queue()
         while self._running:
             try:
-                line = await self._log_queue.get()
-                self.log_view.append(line)
+                item = await q.get()
+                ts = item.get("ts")
+                level = item.get("level")
+                msg = item.get("message")
+                self.log_view.append(f"[{ts:.0f}] {level} | {msg}")
             except Exception:
                 await asyncio.sleep(0.1)
+
+    @QtCore.Slot()
+    def _copy_logs(self) -> None:
+        self.log_view.selectAll()
+        self.log_view.copy()
+        self.log_view.moveCursor(QtWidgets.QTextCursor.End)
+
+    @QtCore.Slot()
+    def _save_logs(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Logs", str(Path.cwd() / "logs.txt"), "Text (*.txt)")
+        if not path:
+            return
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(self.log_view.toPlainText())
 
 
 def run_desktop(settings: BrokerSettings) -> None:

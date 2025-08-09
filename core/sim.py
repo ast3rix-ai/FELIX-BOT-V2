@@ -88,8 +88,20 @@ class SimEngine:
     def _now(self) -> float:
         return time.time()
 
-    def _event(self, kind: str, **payload: Any) -> None:
-        self.events.append(SimEvent(ts=self._now(), kind=kind, payload=payload))
+    def _event(self, kind: str, level: str = "INFO", **payload: Any) -> None:
+        evt = SimEvent(ts=self._now(), kind=kind, payload=payload)
+        self.events.append(evt)
+        try:
+            from .logging import logger
+
+            if level == "ERROR":
+                logger.error({"kind": kind, **payload})
+            elif level == "WARNING":
+                logger.warning({"kind": kind, **payload})
+            else:
+                logger.info({"kind": kind, **payload})
+        except Exception:
+            pass
 
     async def incoming(self, peer_id: str | int, text: str) -> None:
         peer = self.peers.setdefault(peer_id, SimPeer(peer_id=peer_id, display_name=str(peer_id)))
@@ -146,7 +158,7 @@ class SimEngine:
                 try:
                     result = await self.classifier(text, [m["text"] for m in peer.history if m["role"] == "user"])  # type: ignore[index]
                 except Exception as exc:
-                    self._event("llm_result", peer_id=str(peer_id), error=str(exc))
+                    self._event("llm_result", level="ERROR", peer_id=str(peer_id), error=str(exc))
                     peer.folder = SimFolder.MANUAL
                     self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
                     return
