@@ -34,20 +34,29 @@ async def _async_main() -> None:
         await ensure_filters(client)
         logger.info({"event": "ensure_filters_done"})
 
-        # Load templates for replies
-        templates_path = Path(settings.paths.accounts_dir) / settings.account / "templates.yaml"
+        # Load templates and rules
+        base_acc = Path(settings.paths.accounts_dir) / settings.account
+        templates_path = base_acc / "templates.yaml"
+        rules_path = base_acc / "rules.yaml"
         templates: dict = {}
+        rules: dict = {}
         if templates_path.exists():
             try:
                 with templates_path.open("r", encoding="utf-8") as f:
                     templates = yaml.safe_load(f) or {}
             except Exception as e:
                 logger.warning({"event": "templates_load_failed", "error": str(e)})
+        if rules_path.exists():
+            try:
+                with rules_path.open("r", encoding="utf-8") as f:
+                    rules = yaml.safe_load(f) or {}
+            except Exception as e:
+                logger.warning({"event": "rules_load_failed", "error": str(e)})
 
         # LLM fallback instance
         llm = LLM(url=settings.ollama_url, model=settings.llm_model)
 
-        register_handlers(client, templates, llm=llm, threshold=settings.llm_threshold)
+        register_handlers(client, templates, rules, llm=llm, threshold=settings.llm_threshold)
 
         logger.info({"event": "listening"})
         await client.run_until_disconnected()

@@ -12,6 +12,8 @@ from core.router import route
 from core.logging import logger
 from core.classifier import classify_and_maybe_reply
 from core.llm import LLM, LLMReject
+from core.templates import render_template
+from core.persistence import mark_template_used, template_already_used
 
 
 class FolderCache:
@@ -50,7 +52,13 @@ async def build_folder_cache(client: TelegramClient) -> FolderCache:
     return FolderCache.from_filters(filters)
 
 
-def register_handlers(client: TelegramClient, templates: Dict[str, str], llm: Optional[LLM] = None, threshold: float = 0.75) -> None:
+def register_handlers(
+    client: TelegramClient,
+    templates: Dict[str, str],
+    rules: Dict[str, Any],
+    llm: Optional[LLM] = None,
+    threshold: float = 0.75,
+) -> None:
     folder_cache: FolderCache = FolderCache()
 
     async def init_cache() -> None:
@@ -86,7 +94,7 @@ def register_handlers(client: TelegramClient, templates: Dict[str, str], llm: Op
 
         # Otherwise treat as Bot folder (2) by default
         text = event.raw_text or ""
-        action, payload = route(text, rules={})
+        action, payload = route(text, rules=rules, peer_id=peer_key)
 
         if action == "manual":
             # Try LLM fallback if available
@@ -115,19 +123,30 @@ def register_handlers(client: TelegramClient, templates: Dict[str, str], llm: Op
             return
 
         if action == "move_confirmation":
+            send_key = payload.get("send_key")
+            if send_key and not template_already_used(peer_key, send_key):
+                from telegram.actions import mark_read, type_then_send
+                reply_text = render_template(templates, send_key, {"peer": getattr(me, "first_name", "") if (me := await client.get_me()) else ""})
+                await mark_read(client, event.chat_id, event.message)
+                delay = typing_delay(len(reply_text))
+                await type_then_send(client, event.chat_id, reply_text, delay)
+                mark_template_used(peer_key, send_key)
             await add_peer_to(client, 4, sender)
             folder_cache.add(4, sender)
             return
 
         if action == "send_template":
-            template_key = payload.get("template_key", "welcome")
-            reply_text = templates.get(template_key) or templates.get("welcome") or "Thanks for your message."
+            template_key = payload.get("key", "greeting")
+            if template_already_used(peer_key, template_key):
+                return
+            reply_text = render_template(templates, template_key, {"peer": getattr(me, "first_name", "") if (me := await client.get_me()) else ""})
 
             from telegram.actions import mark_read, type_then_send  # local import to avoid cyc.
 
             await mark_read(client, event.chat_id, event.message)
             delay = typing_delay(len(reply_text))
             await type_then_send(client, event.chat_id, reply_text, delay)
+            mark_template_used(peer_key, template_key)
 
     # end handler
 

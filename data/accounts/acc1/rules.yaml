@@ -1,12 +1,14 @@
 # Sample rules configuration
-thresholds:
-  timewaster: 0.2
-  confirmation: 0.8
-
-folders:
-  1: Manual
-  2: Bot
-  3: Timewaster
-  4: Confirmation
+keywords:
+  greeting:
+    - "\\b(hi|hey|hello|helo|yo|sup)\\b"
+  pricelist:
+    - "\\b(menu|prices?|pricelist|what (do|dya) (you|u) have|content\\??)\\b"
+  paylink:
+    - "\\b(pay(link)?|paypal|payment|how to pay|how (do|to) i pay|where do i send)\\b"
+  confirmation:
+    - "\\b(i (sent|send(ing)?)|(i'?ve|have) (paid|payed)|sending now|baby got it|sent it)\\b"
+not_interested:
+  - "\\b(no|nah|not interested|stop|leave me|go away)\\b"
 
 

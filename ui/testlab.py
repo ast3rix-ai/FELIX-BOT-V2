@@ -9,7 +9,7 @@ import yaml
 from PySide6 import QtCore, QtWidgets
 
 from core.sim import SimEngine, SimFolder
-from core.templates import render_template
+from core.templates import render_template, load_templates
 from core.classifier import classify_and_maybe_reply
 
 
@@ -34,8 +34,10 @@ class TestLab(QtWidgets.QWidget):
         left.addLayout(btns1)
         self.btn_add_peer = QtWidgets.QPushButton("Add Peer")
         self.btn_reset = QtWidgets.QPushButton("Reset")
+        self.btn_reload_tpl = QtWidgets.QPushButton("Reload templates")
         btns1.addWidget(self.btn_add_peer)
         btns1.addWidget(self.btn_reset)
+        btns1.addWidget(self.btn_reload_tpl)
 
         self.input_text = QtWidgets.QLineEdit()
         self.btn_send = QtWidgets.QPushButton("Send Incoming")
@@ -119,6 +121,7 @@ class TestLab(QtWidgets.QWidget):
         self.btn_add_peer.clicked.connect(self._on_add_peer)
         self.btn_reset.clicked.connect(self._on_reset)
         self.btn_send.clicked.connect(self._on_send)
+        self.btn_reload_tpl.clicked.connect(self._on_reload_templates)
         self.btn_scenario.clicked.connect(self._on_scenario)
         self.btn_clear.clicked.connect(self._on_clear)
         self.btn_export.clicked.connect(self._on_export)
@@ -139,6 +142,12 @@ class TestLab(QtWidgets.QWidget):
             self.engine.add_peer("user1", "Alice")
         self._refresh_peers()
         self._refresh_logs()
+
+    def _on_reload_templates(self) -> None:
+        try:
+            self.engine.templates = load_templates()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", str(e))
 
     def _refresh_peers(self) -> None:
         self.peer_combo.clear()

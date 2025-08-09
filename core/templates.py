@@ -1,38 +1,35 @@
 from __future__ import annotations
 
-import os
-from string import Formatter
+from pathlib import Path
 from typing import Any, Dict, Optional
 
+import yaml
 
-class _SafeDict(dict):
-    def __missing__(self, key: str) -> str:
-        return "{" + key + "}"
+from .config import load_settings
+
+
+def load_templates(account: Optional[str] = None) -> Dict[str, str]:
+    settings = load_settings()
+    acc = account or settings.account
+    path = settings.paths.accounts_dir / acc / "templates.yaml"
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError("templates.yaml must be a mapping")
+    return {str(k): str(v) for k, v in data.items()}
 
 
 def render_template(templates: Dict[str, str], key: str, context: Optional[Dict[str, Any]] = None) -> str:
-    """Render a simple template with {PLACEHOLDER} variables.
-
-    - Looks up `key` in templates; if missing, returns empty string
-    - Merges provided context with environment variables
-    - Unknown variables are left as-is
-    """
-    raw = templates.get(key, "")
-    if not raw:
-        return ""
-
-    base: Dict[str, Any] = {}
+    if key not in templates:
+        raise KeyError(f"template '{key}' missing")
+    text = templates[key]
+    settings = load_settings()
+    ctx: Dict[str, Any] = {"PAYLINK": settings.paylink}
     if context:
-        base.update(context)
-    # Include environment variables like PAYLINK, etc.
-    base.update(os.environ)
-
-    try:
-        return raw.format_map(_SafeDict(base))
-    except Exception:
-        return raw
+        ctx.update(context)
+    return text.format(**ctx)
 
 
-__all__ = ["render_template"]
+__all__ = ["render_template", "load_templates"]
 
 

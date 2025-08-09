@@ -30,7 +30,7 @@ class BrokerSettings(BaseModel):
     # Model & scoring
     model_name: str = Field(default="gpt-4o-mini")
     threshold: float = Field(default=0.5)
-    paylink: str = Field(default="")
+    paylink: str = Field(default="https://example.com/pay")
 
     # API keys
     telegram_api_id: int = Field(default=0)

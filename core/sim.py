@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple, Callable, Awaitable
 from .delays import typing_delay
 from .router import route
 from .templates import render_template
+from .persistence import mark_template_used, template_already_used
 
 
 class SimFolder(Enum):
@@ -118,7 +119,7 @@ class SimEngine:
         if self.simulate_read:
             self._event("read", peer_id=str(peer_id))
 
-        action, payload = route(text, self.rules)
+        action, payload = route(text, self.rules, peer_id=str(peer_id))
         self._event(
             "route",
             peer_id=str(peer_id),
@@ -129,17 +130,21 @@ class SimEngine:
                 "respect_global_rps": self.respect_global_rps,
             },
         )
-
         if action == "send_template":
-            template_key = payload.get("template_key", "welcome")
-            reply = render_template(self.templates, template_key)
-            if not reply:
-                reply = self.templates.get("welcome", "Thanks for your message.")
+            template_key = payload.get("key", "greeting")
+            if template_already_used(str(peer_id), template_key):
+                self._event("rejected_repeat", peer_id=str(peer_id), template=template_key)
+                peer.folder = SimFolder.MANUAL
+                self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
+                return
+            reply = render_template(self.templates, template_key, {"peer": peer.display_name})
             delay = typing_delay(len(reply))
             if self.simulate_typing:
                 self._event("typing", peer_id=str(peer_id), delay=delay)
             self._event("send", peer_id=str(peer_id), text=reply, template=template_key)
+            # Stay in BOT folder after send
             peer.history.append({"role": "bot", "text": reply, "ts": self._now()})
+            mark_template_used(str(peer_id), template_key)
 
         if action == "move_timewaster":
             peer.folder = SimFolder.TIMEWASTER
@@ -147,37 +152,43 @@ class SimEngine:
             return
 
         if action == "move_confirmation":
+            send_key = payload.get("send_key")
+            if send_key and not template_already_used(str(peer_id), send_key):
+                reply = render_template(self.templates, send_key)
+                delay = typing_delay(len(reply))
+                if self.simulate_typing:
+                    self._event("typing", peer_id=str(peer_id), delay=delay)
+                self._event("send", peer_id=str(peer_id), text=reply, template=send_key)
+                peer.history.append({"role": "bot", "text": reply, "ts": self._now()})
+                mark_template_used(str(peer_id), send_key)
             peer.folder = SimFolder.CONFIRMATION
             self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
             return
 
+        # Manual or unmatched path: try classifier first, then fallback to MANUAL
         if action == "manual":
-            # If classifier available, try it
             if self.classifier is not None:
                 self._event("llm_call", peer_id=str(peer_id))
                 try:
                     result = await self.classifier(text, [m["text"] for m in peer.history if m["role"] == "user"])  # type: ignore[index]
                 except Exception as exc:
                     self._event("llm_result", level="ERROR", peer_id=str(peer_id), error=str(exc))
-                    peer.folder = SimFolder.MANUAL
-                    self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
-                    return
+                else:
+                    intent = str(result.get("intent", "other"))
+                    confidence = float(result.get("confidence", 0.0))
+                    reply = result.get("reply")
+                    self._event("llm_result", peer_id=str(peer_id), intent=intent, confidence=confidence, reply=reply)
 
-                intent = str(result.get("intent", "other"))
-                confidence = float(result.get("confidence", 0.0))
-                reply = result.get("reply")
-                self._event("llm_result", peer_id=str(peer_id), intent=intent, confidence=confidence, reply=reply)
+                    if reply and confidence >= self.threshold:
+                        reply_text = str(reply)
+                        delay = typing_delay(len(reply_text))
+                        if self.simulate_typing:
+                            self._event("typing", peer_id=str(peer_id), delay=delay)
+                        self._event("send", peer_id=str(peer_id), text=reply_text, template=None)
+                        peer.history.append({"role": "bot", "text": reply_text, "ts": self._now()})
+                        return
 
-                if reply and confidence >= self.threshold:
-                    reply_text = str(reply)
-                    delay = typing_delay(len(reply_text))
-                    if self.simulate_typing:
-                        self._event("typing", peer_id=str(peer_id), delay=delay)
-                    self._event("send", peer_id=str(peer_id), text=reply_text, template=None)
-                    peer.history.append({"role": "bot", "text": reply_text, "ts": self._now()})
-                    return
-
-            # Fallback: move to manual
+            # Fallback: move to manual when no confident LLM reply
             peer.folder = SimFolder.MANUAL
             self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
 

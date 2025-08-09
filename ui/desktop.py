@@ -134,22 +134,31 @@ class DesktopWindow(QtWidgets.QMainWindow):
         configure_logging()
 
         account = self.account_combo.currentText()
-        # Load templates
-        templates_path = Path(self.settings.paths.accounts_dir) / account / "templates.yaml"
+        # Load templates and rules
+        acc_dir = Path(self.settings.paths.accounts_dir) / account
+        templates_path = acc_dir / "templates.yaml"
+        rules_path = acc_dir / "rules.yaml"
         templates: dict = {}
+        rules: dict = {}
         if templates_path.exists():
             try:
                 with templates_path.open("r", encoding="utf-8") as f:
                     templates = yaml.safe_load(f) or {}
             except Exception as e:
                 logger.warning({"event": "templates_load_failed", "error": str(e)})
+        if rules_path.exists():
+            try:
+                with rules_path.open("r", encoding="utf-8") as f:
+                    rules = yaml.safe_load(f) or {}
+            except Exception as e:
+                logger.warning({"event": "rules_load_failed", "error": str(e)})
 
         llm = LLM(url=self.settings.ollama_url, model=self.settings.llm_model)
 
         self._client = create_client(self.settings)
         await self._client.start()
         await ensure_filters(self._client)
-        register_handlers(self._client, templates, llm=llm, threshold=self.settings.llm_threshold)
+        register_handlers(self._client, templates, rules, llm=llm, threshold=self.settings.llm_threshold)
 
         # Refresh Test Lab engine with current templates
         self.testlab.engine.templates = templates

@@ -5,7 +5,7 @@ from core.sim import SimEngine, SimFolder
 
 @pytest.mark.asyncio
 async def test_greeting_stays_in_bot():
-    engine = SimEngine(templates={"welcome": "Hello", "pricelist": "Prices"})
+    engine = SimEngine(templates={"greeting": "Hello", "pricelist": "Prices"})
     engine.add_peer("u1", "User 1")
     await engine.incoming("u1", "hi")
     assert engine.peers["u1"].folder == SimFolder.BOT
@@ -14,7 +14,7 @@ async def test_greeting_stays_in_bot():
 
 @pytest.mark.asyncio
 async def test_not_interested_moves_timewaster():
-    engine = SimEngine(templates={"welcome": "Hello"})
+    engine = SimEngine(templates={"greeting": "Hello"})
     engine.add_peer("u1", "User 1")
     await engine.incoming("u1", "not interested")
     assert engine.peers["u1"].folder == SimFolder.TIMEWASTER

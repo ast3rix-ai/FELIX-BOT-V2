@@ -1,15 +1,10 @@
-# Sample templates for messages or automations
-welcome: |
-  Hello {{ name }}, thanks for reaching out!
-  This is an automated reply.
-
-reminder: |
-  Just checking in. Let me know if you still need help.
-
-pricelist: |
-  Here is our current pricelist: ...
-
-how_to_pay: |
-  You can pay via credit card or PayPal. Let me know which you prefer.
+greeting: "heyoo are you interested in my premium content ? :3"
+# Fill this later with your real offer; keep it short.
+pricelist: "— PRICELIST —\n(coming soon)"
+# paylink should be JUST the link (no fluff). Will render {PAYLINK} from env.
+paylink: "{PAYLINK}"
+# When user says they sent/are sending money:
+confirmation: "oky bb lemme check, wait a bit"
+fallback: "bby I’m kinda busy rn — check my menu or just pay here {PAYLINK}"
 
 
