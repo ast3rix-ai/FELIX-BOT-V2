@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 
 from dotenv import load_dotenv
 import yaml
@@ -13,6 +14,7 @@ from core.logging import configure_logging, logger
 from telegram.client_manager import create_client
 from telegram.handlers import register_handlers
 from core.llm import LLM
+from ui.desktop import run_desktop
 
 
 async def _async_main() -> None:
@@ -52,7 +54,12 @@ async def _async_main() -> None:
 
 
 def main() -> None:
-    asyncio.run(_async_main())
+    if "--ui" in sys.argv:
+        load_dotenv()
+        settings = load_settings()
+        run_desktop(settings)
+    else:
+        asyncio.run(_async_main())
 
 
 if __name__ == "__main__":

@@ -31,6 +31,9 @@ Minimal scaffolding to manage Telegram dialog folders using Telethon.
 - Via entrypoint: `telegram-broker`
 - Or: `python -m app.main`
 
+Desktop UI (PySide6):
+- `telegram-broker --ui`
+
 The app logs in (if needed) and ensures the following dialog folders exist with fixed IDs:
 `{1: 'Manual', 2: 'Bot', 3: 'Timewaster', 4: 'Confirmation'}`.
 
@@ -39,6 +42,7 @@ The app logs in (if needed) and ensures the following dialog folders exist with 
 - `app/` – entrypoint
 - `core/` – configuration, logging, folder management
 - `telegram/` – Telegram client setup
+- `ui/` – PySide6 desktop UI
 - `data/accounts/acc1/` – sample templates and rules, plus session storage
 
 ### Notes
