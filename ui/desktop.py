@@ -53,7 +53,6 @@ class DesktopWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(central)
 
         row_top = QtWidgets.QHBoxLayout()
-        layout.addLayout(row_top)
 
         self.account_combo = QtWidgets.QComboBox()
         self.account_combo.addItems([self.settings.account])
@@ -66,7 +65,6 @@ class DesktopWindow(QtWidgets.QMainWindow):
 
         # Counters
         grid = QtWidgets.QGridLayout()
-        layout.addLayout(grid)
 
         self.counter_labels: Dict[int, QtWidgets.QLabel] = {}
         for idx, (fid, title) in enumerate(FOLDERS.items()):
@@ -103,6 +101,11 @@ class DesktopWindow(QtWidgets.QMainWindow):
 
         # Install an additional non-JSON sink for UI
         logger.add(UIQueueWriter(self._log_queue), level="INFO", format="{time:HH:mm:ss} | {level} | {message}", enqueue=True)
+
+    def _build_sim_engine(self):
+        from core.sim import SimEngine
+        # Start with empty templates; will refresh on start
+        return SimEngine(templates={}, threshold=self.settings.llm_threshold)
 
     @QtCore.Slot()
     def on_start_stop(self) -> None:
