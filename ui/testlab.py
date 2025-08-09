@@ -14,9 +14,10 @@ from core.classifier import classify_and_maybe_reply
 
 
 class TestLab(QtWidgets.QWidget):
-    def __init__(self, engine: SimEngine, parent: Optional[QtWidgets.QWidget] = None) -> None:
+    def __init__(self, engine: SimEngine, parent: Optional[QtWidgets.QWidget] = None, live_classifier=None) -> None:
         super().__init__(parent)
         self.engine = engine
+        self.live_classifier = live_classifier
 
         root = QtWidgets.QVBoxLayout(self)
         content = QtWidgets.QHBoxLayout()
@@ -226,9 +227,12 @@ class TestLab(QtWidgets.QWidget):
                 return {"intent": "other", "confidence": conf, "reply": None}
 
             self.engine.classifier = mock_classifier  # type: ignore[assignment]
-        elif use_llm and mode == "Live" and original is None:
-            # Leave as-is; engine.classifier may be None in Test Lab, UI layer could inject a live adapter
-            pass
+        elif use_llm and mode == "Live":
+            # Use injected live classifier when provided
+            if self.live_classifier is not None:
+                self.engine.classifier = self.live_classifier
+            else:
+                self.engine.classifier = original
         else:
             self.engine.classifier = None  # disabled
 
