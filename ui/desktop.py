@@ -8,15 +8,16 @@ from typing import Dict, Optional
 from PySide6 import QtCore, QtWidgets
 from qasync import QEventLoop
 
-from core.config import BrokerSettings
+from core.config import BrokerSettings, _ENV_PATH, load_settings
 from core.logging import logger, configure_logging, get_log_queue
 from core.folder_manager import FOLDERS, ensure_filters, current_filters
 from core.llm import LLM
-from telegram.client_manager import create_client
+from telegram.client_manager import get_client, ensure_authorized
 from telegram.handlers import register_handlers
 
 import yaml
 from .testlab import TestLab
+from .accounts import AccountsDialog, list_accounts
 
 
 class UIQueueWriter:
@@ -55,13 +56,20 @@ class DesktopWindow(QtWidgets.QMainWindow):
         row_top = QtWidgets.QHBoxLayout()
 
         self.account_combo = QtWidgets.QComboBox()
-        self.account_combo.addItems([self.settings.account])
+        self._refresh_accounts()
+        self.btn_manage = QtWidgets.QPushButton("Manage…")
+        self.btn_manage.clicked.connect(self._on_manage)
         row_top.addWidget(QtWidgets.QLabel("Account:"))
         row_top.addWidget(self.account_combo)
+        row_top.addWidget(self.btn_manage)
 
         self.start_button = QtWidgets.QPushButton("Start")
         self.start_button.clicked.connect(self.on_start_stop)
+        self.stop_button = QtWidgets.QPushButton("Stop")
+        self.stop_button.clicked.connect(lambda: asyncio.ensure_future(self._stop()))
+        self.stop_button.setEnabled(False)
         row_top.addWidget(self.start_button)
+        row_top.addWidget(self.stop_button)
 
         # Counters
         grid = QtWidgets.QGridLayout()
@@ -113,6 +121,22 @@ class DesktopWindow(QtWidgets.QMainWindow):
         self.btn_copy_logs.clicked.connect(self._copy_logs)
         self.btn_save_logs.clicked.connect(self._save_logs)
 
+        # Diagnostics line for env path and account
+        diag = QtWidgets.QLabel()
+        s = load_settings()
+        diag.setText(f"Env: {_ENV_PATH or '(none)'} | Account: {s.account}")
+        layout.insertWidget(0, diag)
+
+    def log(self, msg: str) -> None:
+        try:
+            self.log_view.append(msg)
+        except Exception:
+            pass
+        try:
+            print(msg, flush=True)
+        except Exception:
+            pass
+
     def _build_sim_engine(self):
         from core.sim import SimEngine
         from core.templates import load_templates
@@ -136,6 +160,7 @@ class DesktopWindow(QtWidgets.QMainWindow):
             return
         self._running = True
         self.start_button.setText("Stop")
+        self.stop_button.setEnabled(True)
 
         configure_logging()
 
@@ -161,9 +186,32 @@ class DesktopWindow(QtWidgets.QMainWindow):
 
         llm = LLM(url=self.settings.ollama_url, model=self.settings.llm_model)
 
-        self._client = create_client(self.settings)
-        await self._client.start()
-        await ensure_filters(self._client)
+        self._client = await get_client(account)
+        # Robust start with UI logging and error handling
+        self.log("Connecting…")
+        try:
+            await ensure_authorized(self._client)
+            self.log("Connected. Ensuring folders…")
+            mapping = await ensure_filters(self._client)
+            self._folder_map = mapping  # type: ignore[attr-defined]
+            try:
+                setattr(self._client, "_folder_map", mapping)
+            except Exception:
+                pass
+            self.log(f"Folders: {mapping}")
+        except Exception as e:
+            # Friendly message and keep UI alive
+            self.log(f"❌ Start failed: {type(e).__name__}: {e}")
+            self._running = False
+            self.start_button.setText("Start")
+            self.stop_button.setEnabled(False)
+            try:
+                if self._client is not None:
+                    await self._client.disconnect()
+            except Exception:
+                pass
+            self._client = None
+            return
         register_handlers(self._client, templates, rules, llm=llm, threshold=self.settings.llm_threshold)
 
         # Refresh Test Lab engine with current templates
@@ -179,6 +227,7 @@ class DesktopWindow(QtWidgets.QMainWindow):
             return
         self._running = False
         self.start_button.setText("Start")
+        self.stop_button.setEnabled(False)
 
         for task in (self._worker_task, self._counters_task, self._log_task):
             if task:
@@ -192,10 +241,26 @@ class DesktopWindow(QtWidgets.QMainWindow):
                 pass
             self._client = None
 
+    @QtCore.Slot()
+    def _on_manage(self) -> None:
+        dlg = AccountsDialog(self)
+        if dlg.exec() == QtWidgets.QDialog.Accepted and dlg.selected:
+            self._refresh_accounts(select=dlg.selected)
+
+    def _refresh_accounts(self, select: str | None = None) -> None:
+        names = list_accounts()
+        if not names:
+            names = [self.settings.account]
+        cur = select or (self.account_combo.currentText() if self.account_combo.count() else None) or names[0]
+        self.account_combo.clear()
+        self.account_combo.addItems(names)
+        idx = max(0, names.index(cur)) if cur in names else 0
+        self.account_combo.setCurrentIndex(idx)
+
     async def _worker(self) -> None:
         # Keep the client alive while running
         assert self._client is not None
-        while self._running and await self._client.connected():
+        while self._running and self._client.is_connected():
             await asyncio.sleep(0.5)
 
     async def _update_counters_periodically(self) -> None:

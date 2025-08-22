@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 
 import yaml
 
-from .config import load_settings
+from .config import load_settings, DEFAULT_PAYLINK
 from loguru import logger
 
 
@@ -31,10 +31,20 @@ def render_template(templates: Dict[str, str], key: str, context: Optional[Dict[
         raise KeyError(f"template '{key}' missing")
     text = templates[key]
     settings = load_settings()
-    ctx: Dict[str, Any] = {"PAYLINK": settings.paylink}
+    pay = settings.resolved_paylink()
+    if pay == DEFAULT_PAYLINK:
+        logger.warning("PAYLINK not set; using default placeholder")
+    ctx: Dict[str, Any] = {"PAYLINK": pay}
     if context:
         ctx.update(context)
-    return text.format(**ctx)
+    rendered = text.format(**ctx)
+    if not rendered.strip():
+        logger.error(f"Rendered template '{key}' is empty; substituting default paylink text")
+        if key == "paylink":
+            rendered = pay
+        else:
+            rendered = "..."
+    return rendered
 
 
 __all__ = ["render_template", "load_templates", "ensure_template"]

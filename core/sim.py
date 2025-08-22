@@ -6,9 +6,9 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Callable, Awaitable
 
 from .delays import typing_delay
-from .router import route
+from .router import route_fast, route_full, normalize_text, looks_like_payment_intent
 from .templates import render_template
-from .persistence import mark_template_used, template_already_used
+from .persistence import mark_template_used, template_already_used, set_last_template, reset_peer_history, get_used_templates
 
 
 class SimFolder(Enum):
@@ -54,6 +54,7 @@ class SimEngine:
         self.simulate_read = simulate_read
         self.respect_peer_cooldown: bool = False
         self.respect_global_rps: bool = False
+        self.use_llm: bool = False
 
         self.peers: Dict[str | int, SimPeer] = {}
         self.events: List[SimEvent] = []
@@ -82,6 +83,8 @@ class SimEngine:
         }
 
     def add_peer(self, peer_id: str | int, name: str, folder: SimFolder = SimFolder.BOT) -> SimPeer:
+        # Reset any persisted state for this peer across tests/runs
+        reset_peer_history(str(peer_id))
         peer = SimPeer(peer_id=peer_id, display_name=name, folder=folder)
         self.peers[peer_id] = peer
         return peer
@@ -106,9 +109,6 @@ class SimEngine:
 
     async def incoming(self, peer_id: str | int, text: str) -> None:
         peer = self.peers.setdefault(peer_id, SimPeer(peer_id=peer_id, display_name=str(peer_id)))
-        if peer.folder is not SimFolder.BOT:
-            peer.folder = SimFolder.BOT
-            self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
         peer.history.append({"role": "user", "text": text, "ts": self._now()})
         self._event("incoming", peer_id=str(peer_id), text=text)
         await self.process(peer_id, text)
@@ -119,10 +119,21 @@ class SimEngine:
             self._event("ignored", peer_id=str(peer_id), folder=peer.folder.name)
             return
 
-        if self.simulate_read:
-            self._event("read", peer_id=str(peer_id))
-
-        action, payload = route(text, self.rules, peer_id=str(peer_id))
+        # Decide action first without reading; try full route (fast + LLM + rescue)
+        try:
+            action, payload = await route_full(
+                text,
+                self.rules,
+                str(peer_id),
+                history=peer.history,
+                folder_name=peer.folder.name,
+                classifier=self.classifier if getattr(self, "use_llm", False) else None,
+                threshold=self.threshold,
+            )
+        except Exception as exc:
+            self._event("banner", text="LLM OFFLINE — using heuristics")
+            # fallback: fast route
+            action, payload = route_fast(text, self.rules, peer_id=str(peer_id))
         self._event(
             "route",
             peer_id=str(peer_id),
@@ -134,6 +145,8 @@ class SimEngine:
             },
         )
         if action == "send_template":
+            if self.simulate_read:
+                self._event("read", peer_id=str(peer_id))
             template_key = payload.get("key", "greeting")
             if template_already_used(str(peer_id), template_key):
                 self._event("rejected_repeat", peer_id=str(peer_id), template=template_key)
@@ -148,6 +161,10 @@ class SimEngine:
             # Stay in BOT folder after send
             peer.history.append({"role": "bot", "text": reply, "ts": self._now()})
             mark_template_used(str(peer_id), template_key)
+            set_last_template(str(peer_id), template_key)
+            # ensure BOT folder
+            peer.folder = SimFolder.BOT
+            self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
 
         if action == "move_timewaster":
             peer.folder = SimFolder.TIMEWASTER
@@ -155,6 +172,8 @@ class SimEngine:
             return
 
         if action == "move_confirmation":
+            if self.simulate_read:
+                self._event("read", peer_id=str(peer_id))
             send_key = payload.get("send_key")
             if send_key and not template_already_used(str(peer_id), send_key):
                 reply = render_template(self.templates, send_key)
@@ -164,12 +183,14 @@ class SimEngine:
                 self._event("send", peer_id=str(peer_id), text=reply, template=send_key)
                 peer.history.append({"role": "bot", "text": reply, "ts": self._now()})
                 mark_template_used(str(peer_id), send_key)
+                set_last_template(str(peer_id), send_key)
             peer.folder = SimFolder.CONFIRMATION
             self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
             return
 
-        # Manual or unmatched path: try classifier first, then fallback to MANUAL
+        # Manual or unmatched path: try legacy reply-classifier first, then chooser, then fallback to MANUAL
         if action == "manual":
+            # 1) Legacy classifier that returns a reply
             if self.classifier is not None:
                 self._event("llm_call", peer_id=str(peer_id))
                 try:
@@ -183,15 +204,114 @@ class SimEngine:
                     self._event("llm_result", peer_id=str(peer_id), intent=intent, confidence=confidence, reply=reply)
 
                     if reply and confidence >= self.threshold:
+                        if self.simulate_read:
+                            self._event("read", peer_id=str(peer_id))
                         reply_text = str(reply)
                         delay = typing_delay(len(reply_text))
                         if self.simulate_typing:
                             self._event("typing", peer_id=str(peer_id), delay=delay)
                         self._event("send", peer_id=str(peer_id), text=reply_text, template=None)
                         peer.history.append({"role": "bot", "text": reply_text, "ts": self._now()})
+                        # ensure BOT folder
+                        peer.folder = SimFolder.BOT
+                        self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
                         return
 
-            # Fallback: move to manual when no confident LLM reply
+            # 2) Use LLM template chooser only when no legacy classifier is provided
+            if self.classifier is None:
+                try:
+                    from .classifier import choose_template_or_move
+                    from .llm import LLM
+                    from .config import load_settings
+                    s = load_settings()
+                    llm = LLM(url=s.ollama_url, model=s.llm_model)
+                    used = []  # simple: not tracking here explicitly beyond mark_template_used
+                    act, pay = await choose_template_or_move(
+                        llm, text, [m["text"] for m in peer.history if m["role"] == "user"], peer.folder.name, used, self.threshold
+                    )
+                except Exception as exc:
+                    self._event("llm_result", level="ERROR", peer_id=str(peer_id), error=str(exc))
+                    act, pay = ("move_manual", {})
+            else:
+                act, pay = ("move_manual", {})
+
+            if act == "send_template":
+                # behave like send_template branch
+                template_key = pay.get("key", "greeting")
+                # If template missing, fallback to manual
+                if template_key not in self.templates:
+                    peer.folder = SimFolder.MANUAL
+                    self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
+                    return
+                if self.simulate_read:
+                    self._event("read", peer_id=str(peer_id))
+                if template_already_used(str(peer_id), template_key):
+                    self._event("rejected_repeat", peer_id=str(peer_id), template=template_key)
+                    peer.folder = SimFolder.MANUAL
+                    self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
+                    return
+                reply = render_template(self.templates, template_key, {"peer": peer.display_name})
+                delay = typing_delay(len(reply))
+                if self.simulate_typing:
+                    self._event("typing", peer_id=str(peer_id), delay=delay)
+                self._event("send", peer_id=str(peer_id), text=reply, template=template_key)
+                peer.history.append({"role": "bot", "text": reply, "ts": self._now()})
+                mark_template_used(str(peer_id), template_key)
+                set_last_template(str(peer_id), template_key)
+                peer.folder = SimFolder.BOT
+                self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
+                return
+            if act == "move_confirmation":
+                if self.simulate_read:
+                    self._event("read", peer_id=str(peer_id))
+                send_key = pay.get("send_key") or "confirmation"
+                if send_key and not template_already_used(str(peer_id), send_key):
+                    reply = render_template(self.templates, send_key)
+                    delay = typing_delay(len(reply))
+                    if self.simulate_typing:
+                        self._event("typing", peer_id=str(peer_id), delay=delay)
+                    self._event("send", peer_id=str(peer_id), text=reply, template=send_key)
+                    peer.history.append({"role": "bot", "text": reply, "ts": self._now()})
+                    mark_template_used(str(peer_id), send_key)
+                    set_last_template(str(peer_id), send_key)
+                peer.folder = SimFolder.CONFIRMATION
+                self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
+                return
+            if act == "move_timewaster":
+                peer.folder = SimFolder.TIMEWASTER
+                self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
+                return
+            # Heuristic rescue for payment intent when LLM fails/off
+            if act == "move_manual":
+                used_now = get_used_templates(str(peer_id))
+                last = None
+                try:
+                    from .persistence import get_last_template as _get_last
+                    last = _get_last(str(peer_id))
+                except Exception:
+                    last = None
+                if (
+                    "confirmation" in self.templates
+                    and looks_like_payment_intent(normalize_text(text))
+                    and ("paylink" in used_now or (last in {"paylink", "pricelist"}))
+                ):
+                    if self.simulate_read:
+                        self._event("read", peer_id=str(peer_id))
+                    send_key = "confirmation"
+                    if not template_already_used(str(peer_id), send_key):
+                        reply = render_template(self.templates, send_key)
+                        delay = typing_delay(len(reply))
+                        if self.simulate_typing:
+                            self._event("typing", peer_id=str(peer_id), delay=delay)
+                        self._event("send", peer_id=str(peer_id), text=reply, template=send_key)
+                        peer.history.append({"role": "bot", "text": reply, "ts": self._now()})
+                        mark_template_used(str(peer_id), send_key)
+                        set_last_template(str(peer_id), send_key)
+                    peer.folder = SimFolder.CONFIRMATION
+                    self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
+                    return
+
+            # Fallback to manual
             peer.folder = SimFolder.MANUAL
             self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
 

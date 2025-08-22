@@ -1,10 +1,15 @@
-greeting: "heyoo are you interested in my premium content ? :3"
-# Fill this later with your real offer; keep it short.
+greeting: "Hey! Are you interested in my premium content? :3"
+
+# Keep it short and clear; you can customize anytime.
 pricelist: "— PRICELIST —\n(coming soon)"
-# paylink should be JUST the link (no fluff). Will render {PAYLINK} from env.
+
+# Will render your PAYLINK from .env via {PAYLINK}
 paylink: "{PAYLINK}"
-# When user says they sent/are sending money:
-confirmation: "oky bb lemme check, wait a bit"
-fallback: "bby I’m kinda busy rn — check my menu or just pay here {PAYLINK}"
+
+# When user says they sent/are sending money
+confirmation: "Okay, I’m checking it now — one moment, please!"
+
+# Fallback when intent is unclear
+fallback: "Kinda busy rn — check my menu or pay here {PAYLINK}"
 
 

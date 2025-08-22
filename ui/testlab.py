@@ -95,6 +95,12 @@ class TestLab(QtWidgets.QWidget):
         self.diag_label = QtWidgets.QLabel("")
         self.diag_label.setWordWrap(True)
         center.addWidget(self.diag_label)
+        # LLM status/banner
+        status_row = QtWidgets.QHBoxLayout()
+        self.llm_status = QtWidgets.QLabel("LLM: Disabled")
+        self.llm_status.setStyleSheet("color: gray;")
+        status_row.addWidget(self.llm_status)
+        center.addLayout(status_row)
         self.chat_list = QtWidgets.QListWidget()
         center.addWidget(self.chat_list)
 
@@ -256,8 +262,16 @@ class TestLab(QtWidgets.QWidget):
                 self.engine.classifier = self.live_classifier
             else:
                 self.engine.classifier = original
+            self.engine.use_llm = True
+            from core.config import load_settings
+            s = load_settings()
+            self.llm_status.setText(f"LLM: Live @ {s.ollama_url}")
+            self.llm_status.setStyleSheet("color: green;")
         else:
             self.engine.classifier = None  # disabled
+            self.engine.use_llm = False
+            self.llm_status.setText("LLM: Disabled")
+            self.llm_status.setStyleSheet("color: gray;")
 
         # Set flags
         self.engine.respect_peer_cooldown = self.chk_peer_cd.isChecked()
@@ -265,6 +279,10 @@ class TestLab(QtWidgets.QWidget):
 
         await self.engine.incoming(pid, text)
         self.engine.classifier = original
+        # If last event is a banner, reflect it
+        if self.engine.events and self.engine.events[-1].kind == "banner":
+            self.llm_status.setText(str(self.engine.events[-1].payload.get("text", "LLM OFFLINE")))
+            self.llm_status.setStyleSheet("color: orange; font-weight: bold;")
 
     async def _render_soon(self) -> None:
         await asyncio.sleep(0.05)

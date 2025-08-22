@@ -7,13 +7,13 @@ from telethon import events, functions, types
 from telethon.client.telegramclient import TelegramClient
 
 from core.delays import typing_delay
-from core.folder_manager import FOLDERS, add_peer_to, get_filters
-from core.router import route
+from core.folder_manager import FOLDERS, get_filters, move_peer_to
+from core.router import route_full, route_fast
 from core.logging import logger
-from core.classifier import classify_and_maybe_reply
+from core.classifier import choose_template_or_move
 from core.llm import LLM, LLMReject
 from core.templates import render_template
-from core.persistence import mark_template_used, template_already_used
+from core.persistence import mark_template_used, template_already_used, set_last_template
 
 
 class FolderCache:
@@ -72,6 +72,11 @@ def register_handlers(
     peer_locks: Dict[str, asyncio.Lock] = {}
     rps_lock = asyncio.Semaphore(5)
 
+    # Optional dynamic folder id map injected by UI after ensure_filters()
+    folder_map: Dict[str, int] = getattr(client, "_folder_map", {}) if hasattr(client, "_folder_map") else {}
+    def fid(name: str, default_id: int) -> int:
+        return int(folder_map.get(name, default_id))
+
     @client.on(events.NewMessage(incoming=True))
     async def on_new_message(event: events.NewMessage.Event) -> None:  # type: ignore[override]
         if event.is_private is False:
@@ -87,39 +92,44 @@ def register_handlers(
                 fc = await build_folder_cache(client)
                 folder_cache.map = fc.map
 
-        # Ignore if already in Manual(1) / Timewaster(3) / Confirmation(4)
-        for fid in (1, 3, 4):
-            if folder_cache.contains(fid, sender):
+        # Ignore if already in Manual / Timewaster / Confirmation
+        for name, default_id in (("Manual", 1), ("Timewaster", 3), ("Confirmation", 4)):
+            if folder_cache.contains(fid(name, default_id), sender):
+                logger.info({"event": "ignored", "peer": peer_key, "folder": name})
                 return
 
-        # Otherwise treat as Bot folder (2) by default
+        # Otherwise treat as Bot folder by default
         text = event.raw_text or ""
-        action, payload = route(text, rules=rules, peer_id=peer_key)
+        action, payload = await route_full(
+            text,
+            rules,
+            peer_key,
+            history=[],
+            folder_name="BOT",
+            classifier=llm,
+            threshold=threshold,
+        )
 
         if action == "manual":
-            # Try LLM fallback if available
+            # Try LLM chooser if available
             if llm is not None:
                 history: list[str] = []
                 try:
-                    intent, confidence, reply = await classify_and_maybe_reply(llm, text, history, threshold)
+                    act, pay = await choose_template_or_move(llm, text, history, folder="BOT", used_templates=[], threshold=threshold)
                 except LLMReject:
-                    reply = None
-                    confidence = 0.0
-                if reply and confidence >= threshold and len(reply.split()) <= 120:
-                    from telegram.actions import mark_read, type_then_send
-
-                    await mark_read(client, event.chat_id, event.message)
-                    delay = typing_delay(len(reply))
-                    await type_then_send(client, event.chat_id, reply, delay)
-                    return
-            # Fallback: route to Manual without read/typing
-            await add_peer_to(client, 1, sender)
-            folder_cache.add(1, sender)
-            return
+                    act, pay = ("move_manual", {})
+                if act in ("send_template", "move_manual", "move_timewaster", "move_confirmation"):
+                    action, payload = act, pay
+                else:
+                    action, payload = "move_manual", {}
+            if action == "manual":
+                await move_peer_to(client, fid("Manual", 1), sender)
+                folder_cache.add(fid("Manual", 1), sender)
+                return
 
         if action == "move_timewaster":
-            await add_peer_to(client, 3, sender)
-            folder_cache.add(3, sender)
+            await move_peer_to(client, fid("Timewaster", 3), sender)
+            folder_cache.add(fid("Timewaster", 3), sender)
             return
 
         if action == "move_confirmation":
@@ -131,8 +141,9 @@ def register_handlers(
                 delay = typing_delay(len(reply_text))
                 await type_then_send(client, event.chat_id, reply_text, delay)
                 mark_template_used(peer_key, send_key)
-            await add_peer_to(client, 4, sender)
-            folder_cache.add(4, sender)
+                set_last_template(peer_key, send_key)
+            await move_peer_to(client, fid("Confirmation", 4), sender)
+            folder_cache.add(fid("Confirmation", 4), sender)
             return
 
         if action == "send_template":
@@ -147,10 +158,23 @@ def register_handlers(
             delay = typing_delay(len(reply_text))
             await type_then_send(client, event.chat_id, reply_text, delay)
             mark_template_used(peer_key, template_key)
+            set_last_template(peer_key, template_key)
+            # After any bot reply, ensure chat is only in Bot
+            await move_peer_to(client, fid("Bot", 2), sender)
+            folder_cache.add(fid("Bot", 2), sender)
 
     # end handler
 
 
-__all__ = ["register_handlers", "build_folder_cache", "FolderCache"]
+async def start_live(client: TelegramClient, templates: Dict[str, str], rules: Dict[str, Any], llm: Optional[LLM] = None, threshold: float = 0.75) -> None:
+    """Register handlers and run the client until disconnected.
+
+    This is suitable for headless execution or as a background task from the UI.
+    """
+    register_handlers(client, templates, rules, llm=llm, threshold=threshold)
+    await client.run_until_disconnected()
+
+
+__all__ = ["register_handlers", "build_folder_cache", "FolderCache", "start_live"]
 
 

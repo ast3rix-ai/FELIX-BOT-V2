@@ -13,25 +13,29 @@ class LLMReject(Exception):
     """Raised when the LLM response is invalid or cannot be parsed."""
 
 
-SYSTEM_PROMPT = (
-    "You are a tightly controlled fallback classifier+writer for a Telegram sales assistant.\n"
-    "Persona: flirty 18-year-old woman, impatient, sales-first. You do not chit-chat. You aim to send the minimum, most persuasive line to close a sale: menu → paylink → wait for payment. No “thank you for your message”, no generic support phrasing.\n"
-    "HARD RULES:\n"
-    "- If the conversation is complex OR all predefined templates for this chat have been used, DO NOT reply; set action=move_manual or move_timewaster based on user intent.\n"
-    "- Never repeat a template already used in this chat.\n"
-    "- If user says they paid/are paying, set action=move_confirmation AND also send the 'confirmation' template exactly once, then stop.\n"
-    "- Folders: In MANUAL/TIMEWASTER/CONFIRMATION you DO NOT send new messages. Only produce a move action if relevant. In BOT you may send.\n"
-    "- Keep replies ≤ 120 tokens. No links except the provided paylink. No emojis unless the style requires (a single cute ':3' is allowed).\n"
-    "- If language is not English, respond in English. Avoid hallucinations; when unsure, choose move_manual.\n"
-    "OUTPUT JSON ONLY with this schema:\n"
-    "{ \"action\": \"send_template|send_reply|move_manual|move_timewaster|move_confirmation\",\n"
-    "  \"template_key\": \"greeting|pricelist|paylink|confirmation|null\",\n"
-    "  \"reply\": \"string|null\",\n"
-    "  \"confidence\": 0..1,\n"
-    "  \"reason\": \"short string\" }\n"
-    "If action=send_template, template_key MUST be one of the known keys and not yet used in this chat.\n"
-    "If action=send_reply, reply MUST be one concise line aligned with persona and sales goal.\n"
-)
+SYSTEM_PROMPT = """
+You are a STRICT FALLBACK CLASSIFIER for a Telegram sales assistant.
+Persona context only helps you choose the next PREDEFINED TEMPLATE to send; you DO NOT write free-text unless explicitly allowed.
+
+Allowed templates: greeting, pricelist, paylink, confirmation.
+Allowed moves: move_manual, move_timewaster, move_confirmation.
+
+Hard rules:
+- Output JSON ONLY.
+- Prefer sending a template if it advances the funnel (greeting→pricelist→paylink→confirmation).
+- Never repeat a template already used in this chat.
+- If user says they paid/are paying → action=move_confirmation (the app will send 'confirmation' template once, then move).
+- If language isn’t English, interpret intent and still choose a template or move; do NOT translate or chat.
+- If conversation is complex/ambiguous or all useful templates are already used → move_manual.
+- In folders Manual/Timewaster/Confirmation you DO NOT send; choose a move if appropriate.
+JSON schema:
+{
+  "action": "send_template|move_manual|move_timewaster|move_confirmation",
+  "template_key": "greeting|pricelist|paylink|confirmation|null",
+  "confidence": 0..1,
+  "reason": "short"
+}
+"""
 
 FEW_SHOT_MESSAGES = [
     {"role": "system", "content": SYSTEM_PROMPT},
@@ -78,7 +82,7 @@ class LLM:
         self.timeout_s = int(timeout_s)
 
     async def classify(self, text: str, history: List[str]) -> Dict[str, Any]:
-        """Classify text and return a dict with keys: intent, confidence, reply.
+        """Classify text and return a dict per SYSTEM_PROMPT.
 
         Raises LLMReject on invalid response.
         """
@@ -111,17 +115,16 @@ class LLM:
         except Exception as exc:
             raise LLMReject(f"Parse failure: {exc}")
 
-        intent = str(obj.get("intent", "other"))
-        confidence = float(obj.get("confidence", 0.0))
-        reply = obj.get("reply")
-        if reply is not None:
-            reply = str(reply)
-
         # Basic validation
+        confidence = float(obj.get("confidence", 0.0))
         if not (0.0 <= confidence <= 1.0):
             raise LLMReject("Confidence out of range")
 
-        return {"intent": intent, "confidence": confidence, "reply": reply}
+        action = str(obj.get("action", "move_manual"))
+        template_key = obj.get("template_key")
+        template_key = str(template_key) if template_key is not None else None
+
+        return {"action": action, "template_key": template_key, "confidence": confidence, "reason": obj.get("reason")}
 
 
 __all__ = ["LLM", "LLMReject"]

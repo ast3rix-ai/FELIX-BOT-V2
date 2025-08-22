@@ -3,15 +3,16 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import argparse
 
 from dotenv import load_dotenv
 import yaml
 from pathlib import Path
 
-from core.config import load_settings
+from core.config import load_settings, BrokerSettings
 from core.folder_manager import ensure_filters
 from core.logging import configure_logging, logger
-from telegram.client_manager import create_client
+from telegram.client_manager import create_client, get_client, ensure_authorized
 from telegram.handlers import register_handlers
 from core.llm import LLM
 from ui.desktop import run_desktop
@@ -63,12 +64,37 @@ async def _async_main() -> None:
 
 
 def main() -> None:
-    if "--ui" in sys.argv:
-        load_dotenv()
-        settings = load_settings()
-        run_desktop(settings)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ui", action="store_true", help="launch desktop UI")
+    parser.add_argument("--login", action="store_true", help="authorize account")
+    parser.add_argument("--phone", type=str, default=None)
+    parser.add_argument("--account", type=str, default=None)
+    args = parser.parse_args()
+
+    if args.login:
+        asyncio.run(_login_flow(args.account, args.phone))
+        return
+    if args.ui:
+        asyncio.run(_ui_entry())
     else:
         asyncio.run(_async_main())
+
+
+async def _login_flow(account: str | None, phone: str | None) -> None:
+    s = load_settings()
+    acc = account or s.account
+    client = await get_client(acc)
+    try:
+        await ensure_authorized(client, phone)
+        print("✅ authorized. Session saved.")
+    finally:
+        await client.disconnect()
+
+
+async def _ui_entry() -> None:
+    load_dotenv()
+    settings = load_settings()
+    run_desktop(settings)
 
 
 if __name__ == "__main__":

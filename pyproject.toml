@@ -19,7 +19,8 @@ dependencies = [
   "loguru",
   "qasync",
   "PySide6",
-  "pytest"
+  "pytest",
+  "PySocks"
 ]
 
 [project.scripts]
