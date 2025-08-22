@@ -12,15 +12,15 @@ authors = [
   { name = "Your Name" }
 ]
 dependencies = [
-  "telethon",
+  "telethon==1.34.0",
   "pydantic>=2",
   "python-dotenv",
   "pyyaml",
   "loguru",
-  "qasync",
+  "qasync==0.24.0",
   "PySide6",
   "pytest",
-  "PySocks"
+  "PySocks>=1.7.1"
 ]
 
 [project.scripts]

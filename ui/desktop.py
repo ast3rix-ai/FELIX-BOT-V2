@@ -191,17 +191,17 @@ class DesktopWindow(QtWidgets.QMainWindow):
         self.log("Connecting…")
         try:
             await ensure_authorized(self._client)
-            self.log("Connected. Ensuring folders…")
-            mapping = await ensure_filters(self._client)
-            self._folder_map = mapping  # type: ignore[attr-defined]
+            self.log("Folders will be created on first move.")
+        except Exception as e:
+            # Friendly message and keep UI alive; include full traceback
+            import traceback, sys
+            tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+            self.log(f"❌ Start failed: {type(e).__name__}: {e}")
+            self.log(tb)
             try:
-                setattr(self._client, "_folder_map", mapping)
+                print(tb, file=sys.stderr, flush=True)
             except Exception:
                 pass
-            self.log(f"Folders: {mapping}")
-        except Exception as e:
-            # Friendly message and keep UI alive
-            self.log(f"❌ Start failed: {type(e).__name__}: {e}")
             self._running = False
             self.start_button.setText("Start")
             self.stop_button.setEnabled(False)

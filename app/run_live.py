@@ -2,7 +2,7 @@ import asyncio
 from loguru import logger
 from core.config import load_settings
 from telegram.client_manager import get_client, ensure_authorized
-from core.folder_manager import ensure_filters
+from core.folder_manager import move_to_bot
 from telegram.handlers import start_live
 from core.templates import load_templates
 import yaml
@@ -24,7 +24,6 @@ async def main() -> None:
     logger.info(f"Using account={s.account}")
     client = await get_client(s.account)
     await ensure_authorized(client)
-    await ensure_filters(client)
 
     templates = load_templates(s.account)
     rules = load_rules_for_account(s.account)

@@ -7,7 +7,12 @@ from telethon import events, functions, types
 from telethon.client.telegramclient import TelegramClient
 
 from core.delays import typing_delay
-from core.folder_manager import FOLDERS, get_filters, move_peer_to
+from core.folder_manager import (
+    move_to_bot,
+    move_to_manual,
+    move_to_timewaster,
+    move_to_confirmation,
+)
 from core.router import route_full, route_fast
 from core.logging import logger
 from core.classifier import choose_template_or_move
@@ -48,8 +53,8 @@ class FolderCache:
 
 
 async def build_folder_cache(client: TelegramClient) -> FolderCache:
-    filters = await get_filters(client)
-    return FolderCache.from_filters(filters)
+    # Lazy folders: start with empty cache; it will fill as we move peers
+    return FolderCache()
 
 
 def register_handlers(
@@ -92,11 +97,7 @@ def register_handlers(
                 fc = await build_folder_cache(client)
                 folder_cache.map = fc.map
 
-        # Ignore if already in Manual / Timewaster / Confirmation
-        for name, default_id in (("Manual", 1), ("Timewaster", 3), ("Confirmation", 4)):
-            if folder_cache.contains(fid(name, default_id), sender):
-                logger.info({"event": "ignored", "peer": peer_key, "folder": name})
-                return
+        # With lazy folders, cache may be empty; we don't attempt early ignore
 
         # Otherwise treat as Bot folder by default
         text = event.raw_text or ""
@@ -123,13 +124,13 @@ def register_handlers(
                 else:
                     action, payload = "move_manual", {}
             if action == "manual":
-                await move_peer_to(client, fid("Manual", 1), sender)
-                folder_cache.add(fid("Manual", 1), sender)
+                new_id = await move_to_manual(client, sender)
+                folder_cache.add(new_id, sender)
                 return
 
         if action == "move_timewaster":
-            await move_peer_to(client, fid("Timewaster", 3), sender)
-            folder_cache.add(fid("Timewaster", 3), sender)
+            new_id = await move_to_timewaster(client, sender)
+            folder_cache.add(new_id, sender)
             return
 
         if action == "move_confirmation":
@@ -142,8 +143,8 @@ def register_handlers(
                 await type_then_send(client, event.chat_id, reply_text, delay)
                 mark_template_used(peer_key, send_key)
                 set_last_template(peer_key, send_key)
-            await move_peer_to(client, fid("Confirmation", 4), sender)
-            folder_cache.add(fid("Confirmation", 4), sender)
+            new_id = await move_to_confirmation(client, sender)
+            folder_cache.add(new_id, sender)
             return
 
         if action == "send_template":
@@ -160,8 +161,8 @@ def register_handlers(
             mark_template_used(peer_key, template_key)
             set_last_template(peer_key, template_key)
             # After any bot reply, ensure chat is only in Bot
-            await move_peer_to(client, fid("Bot", 2), sender)
-            folder_cache.add(fid("Bot", 2), sender)
+            new_id = await move_to_bot(client, sender)
+            folder_cache.add(new_id, sender)
 
     # end handler
 
