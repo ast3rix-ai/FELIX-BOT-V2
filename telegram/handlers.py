@@ -11,7 +11,7 @@ from telethon.client.telegramclient import TelegramClient
 from core.classifier import choose_template_or_move
 from core.config import load_settings
 from core.delays import typing_delay
-from core.folder_manager import FolderManager, ensure_filters as fm_ensure_filters, move_peer_to, get_filters, FOLDERS
+from core.folder_manager import ensure_filters as fm_ensure_filters, move_peer_to, get_filters, FOLDERS, FOLDER_IDS
 from core.llm import LLM, LLMReject
 from core.persistence import mark_template_used, template_already_used, set_last_template
 from core.router import route_full
@@ -41,9 +41,8 @@ def register_handlers(
 ) -> None:
     @client.on(events.NewMessage(incoming=True))
     async def on_new_message(event: events.NewMessage.Event) -> None:
-        # Use a fresh client and FolderManager for each message to ensure state is not stale
+        # Use a fresh client for each message to ensure state is not stale
         current_client = event.client
-        fm = FolderManager(current_client)
         
         if not event.is_private:
             return
@@ -61,58 +60,60 @@ def register_handlers(
 
         peer_key = f"peer_{event.chat_id}"
 
-        async with asyncio.Lock():
-            # Check if the chat is already in a final folder
-            all_filters = await fm._list_filters()
-            folder_name = None
-            for fid, df in all_filters.items():
-                if any(_same_peer(p, input_peer) for p in (df.include_peers or [])):
-                    folder_name = fm._title_text(df.title)
-                    break
-            
-            if folder_name in ["M0", "C0"]:
-                return
+        # Check if the chat is already in a final folder
+        all_filters = await get_filters(current_client)
+        folder_name = None
+        for df in all_filters:
+            if any(_same_peer(p, input_peer) for p in (df.include_peers or [])):
+                folder_name = df.title.text if isinstance(df.title, types.TextWithEntities) else str(df.title)
+                break
+        
+        if folder_name in ["M0", "C0"]:
+            return
 
-            logger.info(f"user typed: {event.raw_text}")
-            text = event.raw_text or ""
+        logger.info(f"user typed: {event.raw_text}")
+        text = event.raw_text or ""
 
-            action, payload = await route_full(
-                text, rules, peer_key, history=[], folder_name="BOT",
-                classifier=llm, threshold=threshold
-            )
+        action, payload = await route_full(
+            text, rules, peer_key, history=[], folder_name="BOT",
+            classifier=llm, threshold=threshold
+        )
 
-            move_action_map = {
-                "manual": "M0",
-                "move_confirmation": "C0",
-                "send_template": "B0",
-            }
+        move_action_map = {
+            "manual": "M0",
+            "move_confirmation": "C0",
+            "send_template": "B0",
+        }
 
-            if action in move_action_map:
-                target_folder = move_action_map[action]
-                logger.info(f"Moving chat to {target_folder} folder for action: {action}")
+        if action in move_action_map:
+            target_folder = move_action_map[action]
+            logger.info(f"Moving chat to {target_folder} folder for action: {action}")
 
-                try:
-                    if action in ["move_confirmation", "send_template"]:
-                        key = None
-                        if action == "send_template":
-                            key = payload.get("key", "greeting") # Use greeting as fallback
-                        elif action == "move_confirmation":
-                            key = payload.get("send_key", "greeting")
+            try:
+                if action in ["move_confirmation", "send_template"]:
+                    key = None
+                    if action == "send_template":
+                        key = payload.get("key", "greeting") # Use greeting as fallback
+                    elif action == "move_confirmation":
+                        key = payload.get("send_key", "greeting")
 
-                        if key and not template_already_used(peer_key, key):
-                            from telegram.actions import mark_read, type_then_send
-                            
-                            text_to_send = render_template_map(loaded_templates, key, {}) or "..."
+                    if key and not template_already_used(peer_key, key):
+                        from telegram.actions import mark_read, type_then_send
+                        
+                        text_to_send = render_template_map(loaded_templates, key, {}) or "..."
 
-                            await mark_read(current_client, event.chat_id, event.message)
-                            delay = typing_delay(len(text_to_send))
-                            await type_then_send(current_client, event.chat_id, text_to_send, delay)
-                            mark_template_used(peer_key, key)
-                            set_last_template(peer_key, key)
-                    
-                    await fm.move_to_folder(target_folder, input_peer)
-                except Exception as e:
-                    logger.error(f"Failed to process action {action}: {e}", exc_info=True)
+                        await mark_read(current_client, event.chat_id, event.message)
+                        delay = typing_delay(len(text_to_send))
+                        await type_then_send(current_client, event.chat_id, text_to_send, delay)
+                        mark_template_used(peer_key, key)
+                        set_last_template(peer_key, key)
+                
+                    target_folder_id = FOLDER_IDS[target_folder]
+                    logger.info(f"Attempting to move chat to {target_folder} (ID: {target_folder_id})")
+                    await move_peer_to(current_client, target_folder_id, input_peer)
+                    logger.info(f"Successfully moved chat to {target_folder} (ID: {target_folder_id})")
+            except Exception as e:
+                logger.error(f"Failed to process action {action}: {e}", exc_info=True)
 
 async def start_live(client: TelegramClient, templates: Dict[str, str], rules: Dict[str, Any], llm: Optional[LLM] = None, threshold: float = 0.75) -> None:
     register_handlers(client, templates, rules, llm=llm, threshold=threshold)

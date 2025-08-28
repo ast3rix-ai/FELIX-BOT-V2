@@ -9,9 +9,14 @@ from telethon.tl import types as tl_types
 
 FOLDER_TITLES = ["B0", "M0", "C0"]
 
-# Public functional constants (compat with tests and export tooling)
+FOLDER_IDS = {
+    "B0": 2,
+    "M0": 3,
+    "C0": 4,
+}
+
 FOLDERS: Dict[int, str] = {
-    1: "M0",
+    3: "M0",
     2: "B0",
     4: "C0",
 }
@@ -21,7 +26,6 @@ class FolderManager:
     def __init__(self, client):
         self._client = client
         self._filters_cache: Optional[Dict[int, types.DialogFilter]] = None
-        # Serialize folder updates to avoid concurrent races across messages
         self._lock = asyncio.Lock()
 
     async def _list_filters(self, force_refresh: bool = False) -> Dict[int, types.DialogFilter]:
@@ -42,7 +46,6 @@ class FolderManager:
             await self._client(functions.messages.UpdateDialogFilterRequest(id=fid, filter=df))
 
     async def _ensure_ids_in_order(self, ids: Iterable[int]) -> None:
-        """Ensure given folder ids are present in Telegram's filters order."""
         try:
             filters = await self._list_filters()
             current_ids = sorted(list(set(filters.keys()) | set(ids)))
@@ -67,87 +70,55 @@ class FolderManager:
         return ""
 
     def _find_by_title(self, filters: Dict[int, types.DialogFilter], title: str) -> Optional[int]:
-        """Find a folder by its exact title."""
         target_title = title.strip()
         for fid, df in filters.items():
             current_title = self._title_text(df.title)
             if current_title == target_title:
                 return fid
         return None
-
-    def _pick_free_slot(self, filters: Dict[int, types.DialogFilter]) -> int:
-        used = set(filters.keys())
-        for i in range(2, 12): # Start from 2
-            if i not in used:
-                return i
-        raise RuntimeError("All 10 Telegram folder slots are already used.")
-
-    async def ensure_folders(self) -> None:
-        """Ensure all predefined folders exist, creating them if necessary."""
-        all_filters = await self._list_filters()
-        
-        current_titles = {self._title_text(df.title) for df in all_filters.values()}
-        missing_titles = [t for t in FOLDER_TITLES if t not in current_titles]
-
-        if not missing_titles:
-            return
-
-        self_peer = await self._client.get_input_entity('me')
-        for title in missing_titles:
-            new_fid = self._pick_free_slot(all_filters)
-            new_df = types.DialogFilter(id=new_fid, title=title, include_peers=[self_peer], pinned_peers=[], exclude_peers=[])
-            await self._update_filter(new_fid, new_df)
-            all_filters[new_fid] = new_df # Update local copy for next iteration
-            logger.info(f"Created folder '{title}' at slot {new_fid}")
-        
-        await asyncio.sleep(0.5)
-        await self._list_filters(force_refresh=True)
-        logger.debug("Folder cache refreshed after creation.")
     
     async def move_to_folder(self, title: str, peer, exclusive: bool = True) -> int:
-        logger.debug(f"--- move_to_folder started: title='{title}' ---")
         if title not in FOLDER_TITLES:
             raise ValueError(f"Unknown folder title '{title}'")
 
         async with self._lock:
             ip = await self._client.get_input_entity(peer)
-        
-            if exclusive:
-                current_filters = await self._list_filters(force_refresh=True)
-                for fid, df in current_filters.items():
-                    current_title = self._title_text(df.title)
 
-                    if current_title == title:
-                        continue
-
-                    if current_title in FOLDER_TITLES and any(self._same_peer(p, ip) for p in (df.include_peers or [])):
-                        new_peers = [p for p in df.include_peers if not self._same_peer(p, ip)]
-                        df.include_peers = new_peers
-                        await self._update_filter(fid, df)
-                
-                await self._list_filters(force_refresh=True)
-
-            all_filters = await self._list_filters()
-            filters_for_log = {f.id: self._title_text(f.title) for f in all_filters.values()}
-            logger.debug(f"Looking for folder '{title}'. Available filters: {filters_for_log}")
+            # 1. Add the peer to the target folder, creating it if it doesn't exist.
+            all_filters = await self._list_filters(force_refresh=True)
             target_fid = self._find_by_title(all_filters, title)
-        
+            
             if target_fid is None:
-                logger.warning(f"Folder '{title}' not found on first lookup. Retrying after delay...")
-                await asyncio.sleep(1)
-                all_filters = await self._list_filters(force_refresh=True)
-                target_fid = self._find_by_title(all_filters, title)
-
-            if target_fid is not None:
-                df = all_filters[target_fid]
-                if not any(self._same_peer(p, ip) for p in (df.include_peers or [])):
-                    df.include_peers.append(ip)
-                    await self._update_filter(target_fid, df)
-                    await self._list_filters(force_refresh=True)
-                return target_fid
+                target_fid = FOLDER_IDS[title]
+                logger.info(f"Target folder '{title}' not found, creating at slot {target_fid}.")
+                target_df = types.DialogFilter(id=target_fid, title=title, include_peers=[ip], pinned_peers=[], exclude_peers=[])
+                await self._update_filter(target_fid, target_df)
+                await self._ensure_ids_in_order({target_fid})
             else:
-                logger.error(f"FATAL: Folder '{title}' not found even after retry. Aborting move.")
-                return -1 # Indicate error
+                target_df = all_filters.get(target_fid)
+                if target_df and not any(self._same_peer(p, ip) for p in (target_df.include_peers or [])):
+                    target_df.include_peers.append(ip)
+                    await self._update_filter(target_fid, target_df)
+
+            # 2. If exclusive, now forcefully remove the peer from all other managed folders.
+            if exclusive:
+                for other_title in FOLDER_TITLES:
+                    if other_title == title:
+                        continue
+                    
+                    other_fid = FOLDER_IDS[other_title]
+                    current_filters = await self._list_filters(force_refresh=True)
+                    other_df = current_filters.get(other_fid)
+
+                    if other_df and any(self._same_peer(p, ip) for p in (other_df.include_peers or [])):
+                        logger.info(f"Exclusively moving: removing peer from '{other_title}' (slot {other_fid}).")
+                        new_peers = [p for p in other_df.include_peers if not self._same_peer(p, ip)]
+                        other_df.include_peers = new_peers
+                        await self._update_filter(other_fid, other_df)
+
+            # 3. Final refresh for consistency.
+            await self._list_filters(force_refresh=True)
+            return target_fid
 
     async def move_to_manual(self, peer): return await self.move_to_folder("M0", peer)
     async def move_to_bot(self, peer): return await self.move_to_folder("B0", peer)
@@ -162,7 +133,19 @@ __all__ = ["FolderManager"]
 
 async def get_filters(client) -> List[types.DialogFilter]:
     res = await client(functions.messages.GetDialogFiltersRequest())
-    return [f for f in (getattr(res, "filters", []) or []) if isinstance(f, types.DialogFilter)]
+    
+    # Handle different response formats
+    if isinstance(res, list):
+        # Response is directly a list of filters
+        filters_list = res
+    elif hasattr(res, 'filters'):
+        # Response is an object with a filters attribute
+        filters_list = getattr(res, "filters", []) or []
+    else:
+        # Unknown response format
+        filters_list = []
+    
+    return [f for f in filters_list if isinstance(f, types.DialogFilter)]
 
 
 def _normalize_input_peer_key(peer: tl_types.TypeInputPeer) -> str:
@@ -194,10 +177,32 @@ def _build_dialog_filter(folder_id: int, title: str, include_peers: Optional[Lis
 
 async def _get_filters(client) -> Dict[int, types.DialogFilter]:
     res = await client(functions.messages.GetDialogFiltersRequest())
+    logger.info(f"Raw GetDialogFiltersRequest response type: {type(res)}")
+    
+    # Handle different response formats
+    if isinstance(res, list):
+        # Response is directly a list of filters
+        filters_list = res
+        logger.info(f"Response is a direct list with {len(filters_list)} items")
+    elif hasattr(res, 'filters'):
+        # Response is an object with a filters attribute
+        filters_list = getattr(res, "filters", []) or []
+        logger.info(f"Response has filters attribute with {len(filters_list)} items")
+    else:
+        # Unknown response format
+        logger.error(f"Unknown response format: {type(res)}, attributes: {dir(res)}")
+        filters_list = []
+    
     existing: Dict[int, types.DialogFilter] = {}
-    for f in getattr(res, "filters", []) or []:
+    for i, f in enumerate(filters_list):
+        logger.info(f"Filter {i}: type={type(f)}, is_DialogFilter={isinstance(f, types.DialogFilter)}")
         if isinstance(f, types.DialogFilter):
+            logger.info(f"Adding filter {f.id}: {f.title}")
             existing[f.id] = f
+        else:
+            logger.info(f"Skipping non-DialogFilter type: {type(f)}")
+    
+    logger.info(f"Final existing filters dict keys: {list(existing.keys())}")
     return existing
 
 
@@ -209,19 +214,28 @@ def _same_peer(a, b) -> bool:
     return _peer_tuple(a) == _peer_tuple(b)
 
 
-async def _safe_update_filter(client, fid: int, df: types.DialogFilter) -> None:
+async def _safe_update_filter(client, fid: int, df: types.DialogFilter) -> bool:
     """Robustly update a dialog filter, ensuring the id is included in order first."""
     try:
+        # For existing folders, we might still need to update order
         filters = await _get_filters(client)
-        order_ids = sorted(list(set(filters.keys()) | {fid}))
-        await client(functions.messages.UpdateDialogFiltersOrderRequest(order=order_ids))
-        await asyncio.sleep(0.3)
+        if fid not in filters:
+            # For new folders, ensure order includes this ID
+            order_ids = sorted(list(set(filters.keys()) | {fid}))
+            logger.info(f"Updating filter order to include new folder {fid}: {order_ids}")
+            await client(functions.messages.UpdateDialogFiltersOrderRequest(order=order_ids))
+            await asyncio.sleep(0.5)
+        
+        logger.info(f"Updating filter {fid} with title: {df.title}")
         await client(functions.messages.UpdateDialogFilterRequest(id=fid, filter=df))
-    except FilterIdInvalidError:
-        # If it still fails, the session may be in a bad state.
-        # A full refresh of filters might help on the next run.
-        logger.warning(f"Filter update for id {fid} failed despite priming order.")
-        # We don't re-raise, as the UI might want to continue.
+        logger.info(f"Successfully updated filter {fid}")
+        return True
+    except FilterIdInvalidError as e:
+        logger.error(f"Filter update for id {fid} failed with FilterIdInvalidError: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Filter update for id {fid} failed with unexpected error: {e}")
+        return False
 
 async def ensure_filters(client) -> Dict[int, types.DialogFilter]:
     """
@@ -237,24 +251,56 @@ async def ensure_filters(client) -> Dict[int, types.DialogFilter]:
     missing_ids = [fid for fid in FOLDERS.keys() if fid not in existing]
 
     if missing_ids:
+        # Update order once for all folders to avoid conflicts
         all_ids = sorted(list(set(existing.keys()) | set(FOLDERS.keys())))
+        logger.info(f"Setting up filter order for all folders: {all_ids}")
         try:
             await client(functions.messages.UpdateDialogFiltersOrderRequest(order=all_ids))
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)  # Give more time for order update
+            logger.info("Filter order updated successfully")
         except Exception as e:
             logger.warning(f"Could not update dialog filter order: {e}")
 
+        # Create all missing folders without individual order updates
+        self_peer = await client.get_input_entity('me')
         for fid in missing_ids:
             name = FOLDERS[fid]
-            # Create with self as a placeholder peer to satisfy API constraints
-            self_peer = await client.get_input_entity('me')
+            logger.info(f"Creating folder {name} (ID: {fid})")
             df = _build_dialog_filter(fid, name, include_peers=[self_peer])
-            await _safe_update_filter(client, fid, df)
+            try:
+                await client(functions.messages.UpdateDialogFilterRequest(id=fid, filter=df))
+                logger.info(f"Successfully created folder {name} (ID: {fid})")
+            except Exception as e:
+                logger.error(f"Failed to create folder {name} (ID: {fid}): {e}")
         
         if was_empty:
             logger.info("folders created")
         
-        existing = await _get_filters(client)
+        # Give Telegram API time to process all the folder creations
+        await asyncio.sleep(2.0)  # Increased delay
+        
+        # Test: Try to get filters immediately after creation to see raw response
+        logger.info("Testing immediate filter retrieval after creation...")
+        test_filters = await _get_filters(client)
+        logger.info(f"Immediate test retrieved {len(test_filters)} filters")
+        
+        # Refresh filters with a retry mechanism to handle timing issues
+        for attempt in range(5):  # Increased attempts
+            logger.info(f"Checking folder visibility (attempt {attempt + 1}/5)")
+            existing = await _get_filters(client)
+            existing_ids = list(existing.keys())
+            logger.info(f"Currently visible folder IDs: {existing_ids}")
+            missing = [fid for fid in FOLDERS.keys() if fid not in existing]
+            if not missing:
+                logger.info("All folders are now visible")
+                break
+            logger.warning(f"Still missing folders: {missing}")
+            if attempt < 4:  # Don't sleep on the last attempt
+                await asyncio.sleep(1.0)  # Increased sleep time
+        
+        if missing:
+            logger.error(f"Some folders still missing after all retries: {missing}")
+            logger.error("This might be a Telegram API issue or account limitation")
 
     return {fid: existing[fid] for fid in FOLDERS.keys() if fid in existing}
 
@@ -267,7 +313,9 @@ async def add_peer_to(client, folder_id: int, peer: object) -> None:
     if existing is None:
         title = FOLDERS.get(folder_id, f"Folder {folder_id}")
         desired = _build_dialog_filter(folder_id, title, include_peers=[input_peer])
-        await _safe_update_filter(client, folder_id, desired)
+        success = await _safe_update_filter(client, folder_id, desired)
+        if not success:
+            logger.error(f"Failed to create folder {folder_id} when adding peer")
         return
     existing_keys = {_normalize_input_peer_key(p) for p in getattr(existing, "include_peers", [])}
     if input_key in existing_keys:
@@ -275,7 +323,9 @@ async def add_peer_to(client, folder_id: int, peer: object) -> None:
     new_peers = list(getattr(existing, "include_peers", []) or []) + [input_peer]
     title = existing.title.text if isinstance(existing.title, types.TextWithEntities) else (FOLDERS.get(folder_id, str(existing.title)))
     desired = _build_dialog_filter(folder_id, title, include_peers=new_peers)
-    await _safe_update_filter(client, folder_id, desired)
+    success = await _safe_update_filter(client, folder_id, desired)
+    if not success:
+        logger.error(f"Failed to add peer to folder {folder_id}")
 
 
 async def remove_peer_from(client, folder_id: int, peer: object) -> None:
@@ -291,7 +341,9 @@ async def remove_peer_from(client, folder_id: int, peer: object) -> None:
         return
     title = existing.title.text if isinstance(existing.title, types.TextWithEntities) else (FOLDERS.get(folder_id, str(existing.title)))
     desired = _build_dialog_filter(folder_id, title, include_peers=new_peers)
-    await _safe_update_filter(client, folder_id, desired)
+    success = await _safe_update_filter(client, folder_id, desired)
+    if not success:
+        logger.error(f"Failed to remove peer from folder {folder_id}")
 
 
 async def current_filters(client) -> Dict[int, types.DialogFilter]:
@@ -319,22 +371,48 @@ async def move_peer_to(client, target_folder_id: int, peer: object) -> None:
                     pinned_peers=list(df.pinned_peers or []), include_peers=after,
                     exclude_peers=list(df.exclude_peers or []),
                 )
-                await _safe_update_filter(client, fid, df2)
+                success = await _safe_update_filter(client, fid, df2)
+                if not success:
+                    logger.error(f"Failed to remove peer from folder {fid}")
     
     # Add to target
     target = filters.get(target_folder_id)
     if not target:
-        raise RuntimeError(f"Target folder id {target_folder_id} not found after ensuring filters")
+        # Try refreshing filters one more time in case of timing issues
+        logger.warning(f"Target folder id {target_folder_id} not found, refreshing filters...")
+        await asyncio.sleep(0.5)
+        filters = await ensure_filters(client)
+        target = filters.get(target_folder_id)
+        
+        if not target:
+            raise RuntimeError(f"Target folder id {target_folder_id} not found after ensuring filters and refresh")
     
     peers = list(target.include_peers or [])
+    
+    # Remove self (placeholder) peer if it exists and we're adding a real chat
+    self_peer = await client.get_input_entity('me')
+    original_peer_count = len(peers)
+    peers = [p for p in peers if not _same_peer(p, self_peer)]
+    if len(peers) < original_peer_count:
+        logger.info(f"Removed placeholder 'self' peer from folder {target_folder_id}")
+    
+    # Add the new peer if it's not already there
     if not any(_same_peer(p, ip) for p in peers):
         peers.append(ip)
+        logger.info(f"Added new peer to folder {target_folder_id}")
+    else:
+        logger.info(f"Peer already exists in folder {target_folder_id}")
+        
+    # Only update if there are changes
+    if set(_normalize_input_peer_key(p) for p in peers) != set(_normalize_input_peer_key(p) for p in (target.include_peers or [])):
         target2 = types.DialogFilter(
             id=target_folder_id, title=target.title, emoticon=getattr(target, "emoticon", ""),
             pinned_peers=list(target.pinned_peers or []), include_peers=peers,
             exclude_peers=list(target.exclude_peers or []),
         )
-        await _safe_update_filter(client, target_folder_id, target2)
+        success = await _safe_update_filter(client, target_folder_id, target2)
+        if not success:
+            logger.error(f"Failed to update folder {target_folder_id} with new peer")
     # The actual logging of the move will be handled in the handler for more context
 
 

@@ -78,7 +78,7 @@ class DesktopWindow(QtWidgets.QMainWindow):
         # Counters
         grid = QtWidgets.QGridLayout()
 
-        self._folder_titles: Dict[int, str] = {1: "M0", 2: "B0", 4: "C0"}
+        self._folder_titles: Dict[int, str] = {3: "M0", 2: "B0", 4: "C0"}
         self.counter_labels: Dict[int, QtWidgets.QLabel] = {}
         for idx, (fid, title) in enumerate(self._folder_titles.items()):
             grid.addWidget(QtWidgets.QLabel(f"{title}:"), idx, 0)
@@ -198,14 +198,11 @@ class DesktopWindow(QtWidgets.QMainWindow):
         llm = LLM(url=self.settings.ollama_url, model=self.settings.llm_model)
 
         self._client = await get_client(account)
-        fm = FolderManager(self._client)
         # Robust start with UI logging and error handling
         self.log("Connecting…")
         try:
             await ensure_authorized(self._client, self.settings.telegram_phone)
-            self.log("Ensuring folders exist…")
-            await fm.ensure_folders()
-            self.log("Folders ready.")
+            self.log("Ready. Folders will be created on first move.")
         except Exception as e:
             # Friendly message and keep UI alive; include full traceback
             import traceback, sys
