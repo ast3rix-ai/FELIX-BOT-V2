@@ -10,10 +10,13 @@ from qasync import QEventLoop
 
 from core.config import BrokerSettings, _ENV_PATH, load_settings
 from core.logging import logger, configure_logging, get_log_queue
-from core.folder_manager import FOLDERS, ensure_filters, current_filters
+from telethon.tl import functions, types
 from core.llm import LLM
 from telegram.client_manager import get_client, ensure_authorized
 from telegram.handlers import register_handlers
+from core.templates import load_templates
+from core.folder_manager import FolderManager
+
 
 import yaml
 from .testlab import TestLab
@@ -48,6 +51,7 @@ class DesktopWindow(QtWidgets.QMainWindow):
         self._counters_task: Optional[asyncio.Task] = None
         self._log_task: Optional[asyncio.Task] = None
         self._log_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._folder_manager: Optional[FolderManager] = None
 
         # UI
         central = QtWidgets.QWidget(self)
@@ -74,8 +78,9 @@ class DesktopWindow(QtWidgets.QMainWindow):
         # Counters
         grid = QtWidgets.QGridLayout()
 
+        self._folder_titles: Dict[int, str] = {1: "M0", 2: "B0", 4: "C0"}
         self.counter_labels: Dict[int, QtWidgets.QLabel] = {}
-        for idx, (fid, title) in enumerate(FOLDERS.items()):
+        for idx, (fid, title) in enumerate(self._folder_titles.items()):
             grid.addWidget(QtWidgets.QLabel(f"{title}:"), idx, 0)
             lab = QtWidgets.QLabel("0")
             self.counter_labels[fid] = lab
@@ -115,7 +120,7 @@ class DesktopWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(central)
 
         # Install an additional non-JSON sink for UI
-        logger.add(UIQueueWriter(self._log_queue), level="INFO", format="{time:HH:mm:ss} | {level} | {message}", enqueue=True)
+        logger.add(UIQueueWriter(self._log_queue), level="INFO", format="{message}", enqueue=True)
 
         # Wire copy/save actions
         self.btn_copy_logs.clicked.connect(self._copy_logs)
@@ -162,9 +167,15 @@ class DesktopWindow(QtWidgets.QMainWindow):
         self.start_button.setText("Stop")
         self.stop_button.setEnabled(True)
 
-        configure_logging()
+        configure_logging("DEBUG")
 
         account = self.account_combo.currentText()
+        # Preload templates (module-global) for live mode
+        self.log("Loading templates…")
+        try:
+            load_templates(account)
+        except Exception:
+            pass
         # Load templates and rules
         acc_dir = Path(self.settings.paths.accounts_dir) / account
         templates_path = acc_dir / "templates.yaml"
@@ -187,11 +198,14 @@ class DesktopWindow(QtWidgets.QMainWindow):
         llm = LLM(url=self.settings.ollama_url, model=self.settings.llm_model)
 
         self._client = await get_client(account)
+        fm = FolderManager(self._client)
         # Robust start with UI logging and error handling
         self.log("Connecting…")
         try:
-            await ensure_authorized(self._client)
-            self.log("Folders will be created on first move.")
+            await ensure_authorized(self._client, self.settings.telegram_phone)
+            self.log("Ensuring folders exist…")
+            await fm.ensure_folders()
+            self.log("Folders ready.")
         except Exception as e:
             # Friendly message and keep UI alive; include full traceback
             import traceback, sys
@@ -202,17 +216,11 @@ class DesktopWindow(QtWidgets.QMainWindow):
                 print(tb, file=sys.stderr, flush=True)
             except Exception:
                 pass
-            self._running = False
-            self.start_button.setText("Start")
-            self.stop_button.setEnabled(False)
-            try:
-                if self._client is not None:
-                    await self._client.disconnect()
-            except Exception:
-                pass
             self._client = None
             return
-        register_handlers(self._client, templates, rules, llm=llm, threshold=self.settings.llm_threshold)
+        register_handlers(
+            self._client, templates, rules, llm=llm, threshold=self.settings.llm_threshold
+        )
 
         # Refresh Test Lab engine with current templates
         self.testlab.engine.templates = templates
@@ -267,10 +275,16 @@ class DesktopWindow(QtWidgets.QMainWindow):
         while self._running:
             try:
                 if self._client is not None:
-                    mapping = await current_filters(self._client)
+                    res = await self._client(functions.messages.GetDialogFiltersRequest())
+                    fl = getattr(res, "filters", []) or []
+                    title_to_count: Dict[str, int] = {}
+                    for f in fl:
+                        if isinstance(f, types.DialogFilter):
+                            t = getattr(f, "title", "")
+                            title_to_count[t] = len(getattr(f, "include_peers", []) or [])
                     for fid, lab in self.counter_labels.items():
-                        count = len(getattr(mapping.get(fid), "include_peers", []) or [])
-                        lab.setText(str(count))
+                        title = self._folder_titles.get(fid, "")
+                        lab.setText(str(title_to_count.get(title, 0)))
             except Exception:
                 pass
             await asyncio.sleep(5.0)

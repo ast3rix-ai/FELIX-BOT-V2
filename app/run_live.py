@@ -25,6 +25,7 @@ async def main() -> None:
     client = await get_client(s.account)
     await ensure_authorized(client)
 
+    # Ensure templates are loaded into module-global cache for live
     templates = load_templates(s.account)
     rules = load_rules_for_account(s.account)
 

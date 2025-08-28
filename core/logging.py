@@ -40,7 +40,7 @@ def configure_logging(level: str | int = "INFO") -> None:
     logger.add(
         sys.stdout,
         level=level,
-        serialize=True,
+        format="{message}",
         backtrace=os.getenv("LOG_BACKTRACE", "0") == "1",
         diagnose=os.getenv("LOG_DIAGNOSE", "0") == "1",
         enqueue=True,

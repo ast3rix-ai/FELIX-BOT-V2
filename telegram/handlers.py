@@ -1,61 +1,36 @@
 from __future__ import annotations
-
 import asyncio
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Dict, Any, Optional, Tuple
+import re
 
-from telethon import events, functions, types
+from loguru import logger
+from telethon import events, types
+from telethon.errors import FilterIdInvalidError
 from telethon.client.telegramclient import TelegramClient
 
-from core.delays import typing_delay
-from core.folder_manager import (
-    move_to_bot,
-    move_to_manual,
-    move_to_timewaster,
-    move_to_confirmation,
-)
-from core.router import route_full, route_fast
-from core.logging import logger
 from core.classifier import choose_template_or_move
+from core.config import load_settings
+from core.delays import typing_delay
+from core.folder_manager import FolderManager, ensure_filters as fm_ensure_filters, move_peer_to, get_filters, FOLDERS
 from core.llm import LLM, LLMReject
-from core.templates import render_template
 from core.persistence import mark_template_used, template_already_used, set_last_template
+from core.router import route_full
+from core.templates import get_templates, load_templates, render_template as render_template_map
 
+def _peer_tuple(ip) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    return (getattr(ip, "user_id", None), getattr(ip, "chat_id", None), getattr(ip, "channel_id", None))
 
-class FolderCache:
-    def __init__(self) -> None:
-        # folder_id -> set of peer key strings
-        self.map: Dict[int, Set[str]] = {}
+def _same_peer(a, b) -> bool:
+    return _peer_tuple(a) == _peer_tuple(b)
 
-    @staticmethod
-    def _peer_key(peer: types.TypeInputPeer) -> str:
-        if isinstance(peer, types.InputPeerUser):
-            return f"user:{peer.user_id}"
-        if isinstance(peer, types.InputPeerChat):
-            return f"chat:{peer.chat_id}"
-        if isinstance(peer, types.InputPeerChannel):
-            return f"channel:{peer.channel_id}"
-        if isinstance(peer, types.InputPeerSelf):
-            return "self"
-        return str(peer)
-
-    @classmethod
-    def from_filters(cls, filters: Any) -> "FolderCache":
-        inst = cls()
-        for f in filters:
-            inst.map[f.id] = {cls._peer_key(p) for p in getattr(f, "include_peers", [])}
-        return inst
-
-    def contains(self, folder_id: int, input_peer: types.TypeInputPeer) -> bool:
-        return self._peer_key(input_peer) in self.map.get(folder_id, set())
-
-    def add(self, folder_id: int, input_peer: types.TypeInputPeer) -> None:
-        self.map.setdefault(folder_id, set()).add(self._peer_key(input_peer))
-
-
-async def build_folder_cache(client: TelegramClient) -> FolderCache:
-    # Lazy folders: start with empty cache; it will fill as we move peers
-    return FolderCache()
-
+async def get_current_folder_name(client, peer, server_filters) -> Optional[str]:
+    for f in server_filters:
+        title = f.title.text if isinstance(f.title, types.TextWithEntities) else str(f.title)
+        norm_title = re.sub(r"^\s*[A-Z0-9]+\s*", "", title).strip()
+        if norm_title in FOLDERS.values():
+            if any(_same_peer(p, peer) for p in (f.include_peers or [])):
+                return norm_title
+    return None
 
 def register_handlers(
     client: TelegramClient,
@@ -64,118 +39,85 @@ def register_handlers(
     llm: Optional[LLM] = None,
     threshold: float = 0.75,
 ) -> None:
-    folder_cache: FolderCache = FolderCache()
-
-    async def init_cache() -> None:
-        nonlocal folder_cache
-        folder_cache = await build_folder_cache(client)
-
-    # initialize cache in background
-    asyncio.create_task(init_cache())
-
-    # Per-peer locks and a simple global RPS limiter
-    peer_locks: Dict[str, asyncio.Lock] = {}
-    rps_lock = asyncio.Semaphore(5)
-
-    # Optional dynamic folder id map injected by UI after ensure_filters()
-    folder_map: Dict[str, int] = getattr(client, "_folder_map", {}) if hasattr(client, "_folder_map") else {}
-    def fid(name: str, default_id: int) -> int:
-        return int(folder_map.get(name, default_id))
-
     @client.on(events.NewMessage(incoming=True))
-    async def on_new_message(event: events.NewMessage.Event) -> None:  # type: ignore[override]
-        if event.is_private is False:
+    async def on_new_message(event: events.NewMessage.Event) -> None:
+        # Use a fresh client and FolderManager for each message to ensure state is not stale
+        current_client = event.client
+        fm = FolderManager(current_client)
+        
+        if not event.is_private:
+            return
+        
+        # Always reload templates to catch live edits
+        loaded_templates = load_templates()
+
+        try:
+            input_peer = await current_client.get_input_entity(event.chat_id)
+        except Exception:
+            input_peer = await event.get_input_sender()
+
+        if not input_peer:
             return
 
-        sender = await event.get_input_sender()
-        peer_key = FolderCache._peer_key(sender)
+        peer_key = f"peer_{event.chat_id}"
 
-        lock = peer_locks.setdefault(peer_key, asyncio.Lock())
-        async with rps_lock, lock:
-            # Obtain latest folder state if cache is empty
-            if not folder_cache.map:
-                fc = await build_folder_cache(client)
-                folder_cache.map = fc.map
+        async with asyncio.Lock():
+            # Check if the chat is already in a final folder
+            all_filters = await fm._list_filters()
+            folder_name = None
+            for fid, df in all_filters.items():
+                if any(_same_peer(p, input_peer) for p in (df.include_peers or [])):
+                    folder_name = fm._title_text(df.title)
+                    break
+            
+            if folder_name in ["M0", "C0"]:
+                return
 
-        # With lazy folders, cache may be empty; we don't attempt early ignore
+            logger.info(f"user typed: {event.raw_text}")
+            text = event.raw_text or ""
 
-        # Otherwise treat as Bot folder by default
-        text = event.raw_text or ""
-        action, payload = await route_full(
-            text,
-            rules,
-            peer_key,
-            history=[],
-            folder_name="BOT",
-            classifier=llm,
-            threshold=threshold,
-        )
+            action, payload = await route_full(
+                text, rules, peer_key, history=[], folder_name="BOT",
+                classifier=llm, threshold=threshold
+            )
 
-        if action == "manual":
-            # Try LLM chooser if available
-            if llm is not None:
-                history: list[str] = []
+            move_action_map = {
+                "manual": "M0",
+                "move_confirmation": "C0",
+                "send_template": "B0",
+            }
+
+            if action in move_action_map:
+                target_folder = move_action_map[action]
+                logger.info(f"Moving chat to {target_folder} folder for action: {action}")
+
                 try:
-                    act, pay = await choose_template_or_move(llm, text, history, folder="BOT", used_templates=[], threshold=threshold)
-                except LLMReject:
-                    act, pay = ("move_manual", {})
-                if act in ("send_template", "move_manual", "move_timewaster", "move_confirmation"):
-                    action, payload = act, pay
-                else:
-                    action, payload = "move_manual", {}
-            if action == "manual":
-                new_id = await move_to_manual(client, sender)
-                folder_cache.add(new_id, sender)
-                return
+                    if action in ["move_confirmation", "send_template"]:
+                        key = None
+                        if action == "send_template":
+                            key = payload.get("key", "greeting") # Use greeting as fallback
+                        elif action == "move_confirmation":
+                            key = payload.get("send_key", "greeting")
 
-        if action == "move_timewaster":
-            new_id = await move_to_timewaster(client, sender)
-            folder_cache.add(new_id, sender)
-            return
+                        if key and not template_already_used(peer_key, key):
+                            from telegram.actions import mark_read, type_then_send
+                            
+                            text_to_send = render_template_map(loaded_templates, key, {}) or "..."
 
-        if action == "move_confirmation":
-            send_key = payload.get("send_key")
-            if send_key and not template_already_used(peer_key, send_key):
-                from telegram.actions import mark_read, type_then_send
-                reply_text = render_template(templates, send_key, {"peer": getattr(me, "first_name", "") if (me := await client.get_me()) else ""})
-                await mark_read(client, event.chat_id, event.message)
-                delay = typing_delay(len(reply_text))
-                await type_then_send(client, event.chat_id, reply_text, delay)
-                mark_template_used(peer_key, send_key)
-                set_last_template(peer_key, send_key)
-            new_id = await move_to_confirmation(client, sender)
-            folder_cache.add(new_id, sender)
-            return
-
-        if action == "send_template":
-            template_key = payload.get("key", "greeting")
-            if template_already_used(peer_key, template_key):
-                return
-            reply_text = render_template(templates, template_key, {"peer": getattr(me, "first_name", "") if (me := await client.get_me()) else ""})
-
-            from telegram.actions import mark_read, type_then_send  # local import to avoid cyc.
-
-            await mark_read(client, event.chat_id, event.message)
-            delay = typing_delay(len(reply_text))
-            await type_then_send(client, event.chat_id, reply_text, delay)
-            mark_template_used(peer_key, template_key)
-            set_last_template(peer_key, template_key)
-            # After any bot reply, ensure chat is only in Bot
-            new_id = await move_to_bot(client, sender)
-            folder_cache.add(new_id, sender)
-
-    # end handler
-
+                            await mark_read(current_client, event.chat_id, event.message)
+                            delay = typing_delay(len(text_to_send))
+                            await type_then_send(current_client, event.chat_id, text_to_send, delay)
+                            mark_template_used(peer_key, key)
+                            set_last_template(peer_key, key)
+                    
+                    await fm.move_to_folder(target_folder, input_peer)
+                except Exception as e:
+                    logger.error(f"Failed to process action {action}: {e}", exc_info=True)
 
 async def start_live(client: TelegramClient, templates: Dict[str, str], rules: Dict[str, Any], llm: Optional[LLM] = None, threshold: float = 0.75) -> None:
-    """Register handlers and run the client until disconnected.
-
-    This is suitable for headless execution or as a background task from the UI.
-    """
     register_handlers(client, templates, rules, llm=llm, threshold=threshold)
     await client.run_until_disconnected()
 
-
-__all__ = ["register_handlers", "build_folder_cache", "FolderCache", "start_live"]
+__all__ = ["register_handlers", "start_live"]
 
 

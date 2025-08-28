@@ -217,8 +217,8 @@ class SimEngine:
                         self._event("move_folder", peer_id=str(peer_id), folder=peer.folder.name)
                         return
 
-            # 2) Use LLM template chooser only when no legacy classifier is provided
-            if self.classifier is None:
+            # 2) Use LLM template chooser only when explicitly enabled
+            if self.classifier is None and getattr(self, "use_llm", False):
                 try:
                     from .classifier import choose_template_or_move
                     from .llm import LLM
@@ -265,7 +265,7 @@ class SimEngine:
                 if self.simulate_read:
                     self._event("read", peer_id=str(peer_id))
                 send_key = pay.get("send_key") or "confirmation"
-                if send_key and not template_already_used(str(peer_id), send_key):
+                if send_key and send_key in self.templates and not template_already_used(str(peer_id), send_key):
                     reply = render_template(self.templates, send_key)
                     delay = typing_delay(len(reply))
                     if self.simulate_typing:
@@ -298,7 +298,7 @@ class SimEngine:
                     if self.simulate_read:
                         self._event("read", peer_id=str(peer_id))
                     send_key = "confirmation"
-                    if not template_already_used(str(peer_id), send_key):
+                    if (send_key in self.templates) and not template_already_used(str(peer_id), send_key):
                         reply = render_template(self.templates, send_key)
                         delay = typing_delay(len(reply))
                         if self.simulate_typing:

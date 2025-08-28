@@ -54,6 +54,7 @@ class BrokerSettings(BaseModel):
     # API keys
     telegram_api_id: int = Field(default=0)
     telegram_api_hash: str = Field(default="")
+    telegram_phone: str = Field(default="")
     openai_api_key: Optional[str] = None
 
     # Paths
@@ -104,6 +105,7 @@ class BrokerSettings(BaseModel):
         raw_id = (getenv("TELEGRAM_API_ID", "") or "").strip()
         telegram_api_id = int(raw_id) if raw_id.isdigit() else 0
         telegram_api_hash = (getenv("TELEGRAM_API_HASH", "") or "").strip()
+        telegram_phone = (getenv("TELEGRAM_PHONE", "") or "").strip()
 
         data = {
             "environment": getenv("ENVIRONMENT", "development"),
@@ -113,6 +115,7 @@ class BrokerSettings(BaseModel):
             "paylink": getenv("PAYLINK", "") or "",
             "telegram_api_id": telegram_api_id,
             "telegram_api_hash": telegram_api_hash,
+            "telegram_phone": telegram_phone,
             "openai_api_key": getenv("OPENAI_API_KEY"),
             "ollama_url": getenv("OLLAMA_URL", "http://localhost:11434"),
             "llm_model": getenv("MODEL", "deepseek-r1:7b"),

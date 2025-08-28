@@ -10,7 +10,6 @@ import yaml
 from pathlib import Path
 
 from core.config import load_settings, BrokerSettings
-from core.folder_manager import ensure_filters
 from core.logging import configure_logging, logger
 from telegram.client_manager import create_client, get_client, ensure_authorized
 from telegram.handlers import register_handlers
@@ -21,19 +20,19 @@ from ui.desktop import run_desktop
 async def _async_main() -> None:
     load_dotenv()
     settings = load_settings()
-    configure_logging(os.getenv("LOG_LEVEL", "INFO"))
+    configure_logging(os.getenv("LOG_LEVEL", "DEBUG"))
 
-    logger.info({"event": "start", "account": settings.account})
+    print("Start successfully")
 
     client = create_client(settings)
     async with client:
         # Will prompt for login on first run in console
         await client.start()
+        print("Connecting…")
         me = await client.get_me()
-        logger.info({"event": "authorized", "user": getattr(me, "username", None)})
+        print("Connected")
 
-        await ensure_filters(client)
-        logger.info({"event": "ensure_filters_done"})
+        print("Listening for upcoming messages…")
 
         # Load templates and rules
         base_acc = Path(settings.paths.accounts_dir) / settings.account
@@ -59,7 +58,6 @@ async def _async_main() -> None:
 
         register_handlers(client, templates, rules, llm=llm, threshold=settings.llm_threshold)
 
-        logger.info({"event": "listening"})
         await client.run_until_disconnected()
 
 
